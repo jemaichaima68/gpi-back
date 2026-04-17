@@ -104,8 +104,14 @@ public class SwiftMessage {
     @Column(name = "FILE_NAME", length = 255)
     private String fileName;
 
-    @Column(name = "STATUS", length = 20)   // RECEIVED, ARCHIVED
+    @Column(name = "STATUS", length = 20)   // RECEIVED, ARCHIVED, ACCEPTE, REJETE_AUTO, SIGNALE
     private String status;
+
+    @Column(name = "ALERTE", length = 20)
+    private String alerte;  // valeurs: "OK", "ATTENTION", "GRAVE"
+
+    @Column(name = "MOTIF_ALERTE", length = 500)
+    private String motifAlerte;
 
     @Column(name = "RECEIVED_AT")
     private LocalDateTime receivedAt;
@@ -113,5 +119,14 @@ public class SwiftMessage {
     @Column(name = "ARCHIVED_AT")
     private LocalDateTime archivedAt;
 
+    // ===== Champs ajoutés pour la validation =====
+    @Column(name = "REJECTION_REASON", length = 500)
+    private String rejectionReason;
+
+    @Column(name = "NEEDS_AGENT_APPROVAL")
+    private Boolean needsAgentApproval = false;
+
+    // Champ existant (à conserver mais mieux vaut l'annoter)
+    @Column(name = "TRANSACTION")
     private Boolean transaction;
 }

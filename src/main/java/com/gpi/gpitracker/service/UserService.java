@@ -58,6 +58,8 @@ public class UserService {
                 request.getPassword(), request.getRole()
         );
 
+        System.out.println("=== KEYCLOAK OK, keycloakId: " + keycloakId);
+
         AppUser user = new AppUser();
         user.setKeycloakId(keycloakId);
         user.setUsername(request.getUsername());
@@ -66,7 +68,6 @@ public class UserService {
         user.setLastName(request.getLastName());
         user.setRole(request.getRole());
         user.setActif(1);
-
         user.setPhone(request.getPhone());
         user.setBirthDate(request.getBirthDate());
         user.setAddress(request.getAddress());
@@ -74,23 +75,38 @@ public class UserService {
         user.setPostalCode(request.getPostalCode());
         user.setCountry(request.getCountry());
 
-        AppUser saved = userRepository.save(user);
+        System.out.println("=== AVANT SAVE: " + user.getUsername());
 
-        emailService.sendWelcomeEmail(
-                request.getEmail(), request.getFirstName(),
-                request.getUsername(), request.getPassword()
-        );
+        AppUser saved;
+        try {
+            saved = userRepository.save(user);
+            System.out.println("=== SAVE OK, id: " + saved.getId());
+        } catch (Exception e) {
+            System.err.println("=== ERREUR SAVE DB: " + e.getMessage());
+            e.printStackTrace();
+            keycloakAdminService.deleteUser(keycloakId); // rollback Keycloak
+            throw new RuntimeException("Erreur base de données: " + e.getMessage());
+        }
+
+        try {
+            emailService.sendWelcomeEmail(
+                    request.getEmail(), request.getFirstName(),
+                    request.getUsername(), request.getPassword()
+            );
+            System.out.println("=== EMAIL OK");
+        } catch (Exception e) {
+            System.err.println("=== ERREUR EMAIL (non bloquant): " + e.getMessage());
+            // Ne pas faire échouer la création pour un email raté
+        }
 
         activityLogService.log(
                 "CREATE", "USER", saved.getId(),
                 "Utilisateur " + saved.getUsername() +
-                        " créé avec le rôle " + saved.getRole(),
-                "admin"
+                        " créé avec le rôle " + saved.getRole()
         );
 
         return saved;
     }
-
     @Transactional
     public AppUser updateUser(String id, AppUser userDetails) {
         AppUser user = userRepository.findById(id)
@@ -125,8 +141,7 @@ public class UserService {
 
         activityLogService.log(
                 "UPDATE", "USER", id,
-                "Utilisateur " + updated.getUsername() + " modifié",
-                "admin"
+                "Utilisateur " + updated.getUsername() + " modifié"
         );
 
         return updated;
@@ -149,8 +164,7 @@ public class UserService {
                 newStatus == 1 ? "ACTIVATE" : "DEACTIVATE",
                 "USER", id,
                 "Utilisateur " + updated.getUsername() +
-                        (newStatus == 1 ? " activé" : " désactivé"),
-                "admin"
+                        (newStatus == 1 ? " activé" : " désactivé")
         );
 
         return updated;
@@ -165,8 +179,7 @@ public class UserService {
 
         activityLogService.log(
                 "DELETE", "USER", id,
-                "Utilisateur " + user.getUsername() + " supprimé",
-                "admin"
+                "Utilisateur " + user.getUsername() + " supprimé"
         );
 
         keycloakAdminService.deleteUser(user.getKeycloakId());

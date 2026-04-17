@@ -4,7 +4,7 @@ import com.gpi.gpitracker.entity.AppUser;
 import lombok.Data;
 import java.util.List;
 import java.util.Map;
-
+import java.util.Map;
 @Data
 public class DashboardStats {
     private long totalUsers;

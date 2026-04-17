@@ -45,6 +45,18 @@ public class KeycloakAdminService {
     }
 
     /**
+     * Trouve un rôle dans Keycloak de façon insensible à la casse
+     */
+    private RoleRepresentation findRoleIgnoreCase(RealmResource realm, String roleName) {
+        List<RoleRepresentation> allRoles = realm.roles().list();
+        return allRoles.stream()
+                .filter(r -> r.getName().equalsIgnoreCase(roleName))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException(
+                        "Rôle introuvable dans Keycloak : " + roleName));
+    }
+
+    /**
      * Create a new user in Keycloak
      */
     public String createUser(String username, String email,
@@ -84,7 +96,7 @@ public class KeycloakAdminService {
             CredentialRepresentation credential = new CredentialRepresentation();
             credential.setType(CredentialRepresentation.PASSWORD);
             credential.setValue(password);
-            credential.setTemporary(true);
+            credential.setTemporary(false);
             user.setCredentials(Collections.singletonList(credential));
 
             Response response = users.create(user);
@@ -104,9 +116,8 @@ public class KeycloakAdminService {
             String path = response.getLocation().getPath();
             String keycloakId = path.substring(path.lastIndexOf('/') + 1);
 
-            // Assign role
-            RoleRepresentation roleRep = realm.roles()
-                    .get(role).toRepresentation();
+            // Assign role — insensible à la casse (corrige "ADMIN" vs "Admin" etc.)
+            RoleRepresentation roleRep = findRoleIgnoreCase(realm, role);
             users.get(keycloakId).roles().realmLevel()
                     .add(Collections.singletonList(roleRep));
 
@@ -234,13 +245,13 @@ public class KeycloakAdminService {
     }
 
     /**
-     * Assign role to user
+     * Assign role to user — insensible à la casse
      */
     public void assignRole(String keycloakId, String roleName) {
         Keycloak keycloak = getKeycloak();
         try {
             RealmResource realm = keycloak.realm(targetRealm);
-            RoleRepresentation role = realm.roles().get(roleName).toRepresentation();
+            RoleRepresentation role = findRoleIgnoreCase(realm, roleName);
             realm.users().get(keycloakId).roles().realmLevel()
                     .add(Collections.singletonList(role));
         } finally {
@@ -249,13 +260,13 @@ public class KeycloakAdminService {
     }
 
     /**
-     * Remove role from user
+     * Remove role from user — insensible à la casse
      */
     public void removeRole(String keycloakId, String roleName) {
         Keycloak keycloak = getKeycloak();
         try {
             RealmResource realm = keycloak.realm(targetRealm);
-            RoleRepresentation role = realm.roles().get(roleName).toRepresentation();
+            RoleRepresentation role = findRoleIgnoreCase(realm, roleName);
             realm.users().get(keycloakId).roles().realmLevel()
                     .remove(Collections.singletonList(role));
         } finally {

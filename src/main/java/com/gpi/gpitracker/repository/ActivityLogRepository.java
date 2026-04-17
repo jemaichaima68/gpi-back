@@ -12,4 +12,5 @@ public interface ActivityLogRepository
     List<ActivityLog> findAllByOrderByDateActionDesc();
     List<ActivityLog> findByActionOrderByDateActionDesc(String action);
     List<ActivityLog> findByPerformedByOrderByDateActionDesc(String performedBy);
+    List<ActivityLog> findByEntityTypeOrderByDateActionDesc(String entityType);
 }
