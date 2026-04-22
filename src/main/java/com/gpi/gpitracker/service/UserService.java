@@ -38,6 +38,10 @@ public class UserService {
         return userRepository.findByKeycloakId(keycloakId);
     }
 
+    public Optional<AppUser> getUserByEmail(String email) {
+        return userRepository.findByEmail(email);
+    }
+
     @Transactional
     public AppUser createUser(UserCreateRequest request) {
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
@@ -84,7 +88,7 @@ public class UserService {
         } catch (Exception e) {
             System.err.println("=== ERREUR SAVE DB: " + e.getMessage());
             e.printStackTrace();
-            keycloakAdminService.deleteUser(keycloakId); // rollback Keycloak
+            keycloakAdminService.deleteUser(keycloakId);
             throw new RuntimeException("Erreur base de données: " + e.getMessage());
         }
 
@@ -96,7 +100,6 @@ public class UserService {
             System.out.println("=== EMAIL OK");
         } catch (Exception e) {
             System.err.println("=== ERREUR EMAIL (non bloquant): " + e.getMessage());
-            // Ne pas faire échouer la création pour un email raté
         }
 
         activityLogService.log(
@@ -107,6 +110,7 @@ public class UserService {
 
         return saved;
     }
+
     @Transactional
     public AppUser updateUser(String id, AppUser userDetails) {
         AppUser user = userRepository.findById(id)
@@ -237,5 +241,51 @@ public class UserService {
         stats.setRegistrationsByMonth(registrationsByMonth);
 
         return stats;
+    }
+
+    /**
+     * Réinitialiser le mot de passe d'un utilisateur
+     */
+    @Transactional
+    public String resetUserPassword(String userId) {
+        AppUser user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé : " + userId));
+
+        // Générer un mot de passe temporaire sécurisé
+        String temporaryPassword = generateTemporaryPassword();
+
+        // Mettre à jour dans Keycloak
+        keycloakAdminService.resetPassword(user.getKeycloakId(), temporaryPassword, true);
+
+        // Envoyer l'email à l'agent
+        emailService.sendPasswordResetEmail(
+                user.getEmail(),
+                user.getFirstName(),
+                user.getUsername(),
+                temporaryPassword
+        );
+
+        // Logger l'action
+        activityLogService.log(
+                "RESET_PASSWORD",
+                "USER",
+                userId,
+                "Mot de passe réinitialisé pour l'utilisateur " + user.getUsername()
+        );
+
+        return temporaryPassword;
+    }
+
+    /**
+     * Générer un mot de passe temporaire sécurisé
+     */
+    private String generateTemporaryPassword() {
+        String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%";
+        StringBuilder password = new StringBuilder();
+        Random random = new Random();
+        for (int i = 0; i < 12; i++) {
+            password.append(chars.charAt(random.nextInt(chars.length())));
+        }
+        return password.toString();
     }
 }

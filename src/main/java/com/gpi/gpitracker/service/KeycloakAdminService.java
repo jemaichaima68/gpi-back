@@ -96,7 +96,7 @@ public class KeycloakAdminService {
             CredentialRepresentation credential = new CredentialRepresentation();
             credential.setType(CredentialRepresentation.PASSWORD);
             credential.setValue(password);
-            credential.setTemporary(false);
+            credential.setTemporary(true);
             user.setCredentials(Collections.singletonList(credential));
 
             Response response = users.create(user);
@@ -207,7 +207,7 @@ public class KeycloakAdminService {
             CredentialRepresentation credential = new CredentialRepresentation();
             credential.setType(CredentialRepresentation.PASSWORD);
             credential.setValue(newPassword);
-            credential.setTemporary(temporary);
+            credential.setTemporary(true);
 
             keycloak.realm(targetRealm).users()
                     .get(keycloakId).resetPassword(credential);

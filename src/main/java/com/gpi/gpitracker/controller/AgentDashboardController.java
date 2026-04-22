@@ -22,6 +22,11 @@ public class AgentDashboardController {
     public ResponseEntity<AgentDashboardStatsDto> getStats() {
         return ResponseEntity.ok(service.getDashboardStats());
     }
-
+    @GetMapping("/messages/recent")
+    @PreAuthorize("hasRole('BACK_OFFICE')")
+    public ResponseEntity<List<RecentTransactionDto>> getRecentMessages(
+            @RequestParam(defaultValue = "5") int limit) {
+        return ResponseEntity.ok(service.getRecentMessages(limit));
+    }
 
 }

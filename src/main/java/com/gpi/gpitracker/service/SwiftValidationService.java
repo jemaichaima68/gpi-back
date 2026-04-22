@@ -20,11 +20,23 @@ public class SwiftValidationService {
     private final SwiftMessageRepository messageRepository;
     private final ActivityLogService activityLogService;
 
-    // ==================== ÉVALUATION (sans changer le statut) ====================
+    // ==================== ÉVALUATION PRINCIPALE ====================
 
     public EvaluationResult evaluerTransaction(SwiftMessage message) {
         AppSettings settings = settingsService.getRawSettings();
 
+        // PACS009 : transfert interbancaire - règles différentes
+        if ("PACS009".equals(message.getMessageType())) {
+            return evaluerTransactionInterbancaire(message, settings);
+        }
+
+        // PACS008 : validation standard client
+        return evaluerTransactionClient(message, settings);
+    }
+
+    // ==================== VALIDATION CLIENT (PACS008) ====================
+
+    private EvaluationResult evaluerTransactionClient(SwiftMessage message, AppSettings settings) {
         // 1. Vérification montant maximum
         if (message.getAmount().doubleValue() > settings.getMontantMax()) {
             return new EvaluationResult("GRAVE", "Montant (" + message.getAmount() + " " + message.getCurrency() +
@@ -55,6 +67,64 @@ public class SwiftValidationService {
         return new EvaluationResult("OK", null);
     }
 
+    // ==================== VALIDATION INTERBANCAIRE (PACS009) ====================
+
+    private EvaluationResult evaluerTransactionInterbancaire(SwiftMessage message, AppSettings settings) {
+
+        // 1. Vérification montant maximum (plafond plus élevé pour interbancaire : 10x)
+        double plafondInterbancaire = settings.getMontantMax() * 10;
+        if (message.getAmount().doubleValue() > plafondInterbancaire) {
+            return new EvaluationResult("GRAVE",
+                    "Montant interbancaire (" + message.getAmount() + " " + message.getCurrency() +
+                            ") dépasse le plafond maximum de " + plafondInterbancaire + " " + message.getCurrency());
+        }
+
+        // 2. Vérification montant minimum (même règle que client)
+        if (message.getAmount().doubleValue() < settings.getMontantMin()) {
+            return new EvaluationResult("GRAVE",
+                    "Montant (" + message.getAmount() + " " + message.getCurrency() +
+                            ") inférieur au minimum requis de " + settings.getMontantMin() + " " + message.getCurrency());
+        }
+
+        // 3. Vérification BIC de la banque donneuse d'ordre (obligatoire pour PACS009)
+        if (message.getInstructingAgentBic() == null || message.getInstructingAgentBic().isBlank()) {
+            return new EvaluationResult("GRAVE",
+                    "BIC de la banque donneuse d'ordre (Instructing Agent) manquant");
+        }
+
+        // 4. Vérification BIC de la banque bénéficiaire (obligatoire pour PACS009)
+        if (message.getInstructedAgentBic() == null || message.getInstructedAgentBic().isBlank()) {
+            return new EvaluationResult("GRAVE",
+                    "BIC de la banque bénéficiaire (Instructed Agent) manquant");
+        }
+
+        // 5. Vérification devise autorisée (mêmes règles que client)
+        List<String> devisesOk = Arrays.asList(settings.getDevisesAutorisees().split(","));
+        if (!devisesOk.contains(message.getCurrency())) {
+            return new EvaluationResult("GRAVE",
+                    "Devise " + message.getCurrency() + " non autorisée pour transfert interbancaire");
+        }
+
+        // 6. Vérification pays bénéficiaire (si pays renseigné)
+        if (message.getCreditorCountry() != null && !message.getCreditorCountry().isBlank()) {
+            List<String> paysBloques = Arrays.asList(settings.getPaysSanctionnes().split(","));
+            if (paysBloques.contains(message.getCreditorCountry())) {
+                return new EvaluationResult("GRAVE",
+                        "Pays bénéficiaire " + message.getCreditorCountry() + " est dans la liste des pays sanctionnés");
+            }
+        }
+
+        // 7. Attention si aucun IBAN renseigné (compte nostro/vostro possible)
+        if ((message.getDebtorIban() == null || message.getDebtorIban().isBlank()) &&
+                (message.getCreditorIban() == null || message.getCreditorIban().isBlank())) {
+            return new EvaluationResult("ATTENTION",
+                    "Aucun IBAN renseigné (transaction via compte nostro/vostro) - vérifier la conformité");
+        }
+
+        // 8. Tout est OK
+        return new EvaluationResult("OK", null);
+    }
+
     // ==================== CLASS INTERNE POUR LE RÉSULTAT ====================
 
     public static class EvaluationResult {
@@ -70,7 +140,7 @@ public class SwiftValidationService {
         public String getMotif() { return motif; }
     }
 
-    // ==================== ANCIENNES MÉTHODES (à supprimer ou conserver pour compatibilité) ====================
+    // ==================== MÉTHODES DÉPRÉCIÉES (conservées pour compatibilité) ====================
 
     /**
      * @deprecated Ancienne méthode de validation automatique. Utiliser evaluerTransaction() à la place.

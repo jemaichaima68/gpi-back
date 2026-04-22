@@ -11,6 +11,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/admin")
@@ -50,6 +51,15 @@ public class UserController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
+    // ===== TROUVER PAR EMAIL =====
+    @GetMapping("/users/by-email/{email}")
+    @PreAuthorize("hasRole('Admin')")
+    public ResponseEntity<AppUser> getUserByEmail(@PathVariable String email) {
+        return userService.getUserByEmail(email)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
     // ===== CRÉER UN UTILISATEUR =====
     @PostMapping("/users")
     @PreAuthorize("hasRole('Admin')")
@@ -84,6 +94,21 @@ public class UserController {
         try {
             AppUser updated = userService.toggleUserStatus(id);
             return ResponseEntity.ok(updated);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    // ===== RÉINITIALISER LE MOT DE PASSE =====
+    @PostMapping("/users/{id}/reset-password")
+    @PreAuthorize("hasRole('Admin')")
+    public ResponseEntity<?> resetUserPassword(@PathVariable String id) {
+        try {
+            String newPassword = userService.resetUserPassword(id);
+            return ResponseEntity.ok(Map.of(
+                    "message", "Mot de passe réinitialisé avec succès",
+                    "temporaryPassword", newPassword
+            ));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(e.getMessage());
         }

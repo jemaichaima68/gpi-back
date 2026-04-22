@@ -18,11 +18,11 @@ public class SwiftMessage {
     @SequenceGenerator(name = "swift_msg_seq", sequenceName = "SWIFT_MSG_SEQ", allocationSize = 1)
     private Long id;
 
-    // ===== Type de message (PACS008, PACS009, PACS002...) =====
+    // ===== Type de message (PACS008, PACS009, PACS002, CAMT056, CAMT029...) =====
     @Column(name = "MESSAGE_TYPE", length = 20, nullable = false)
     private String messageType;
 
-    // ===== GrpHdr =====
+    // ===== GrpHdr (Group Header) =====
     @Column(name = "MSG_ID", unique = true, nullable = false, length = 35)
     private String msgId;
 
@@ -41,7 +41,7 @@ public class SwiftMessage {
     @Column(name = "INSTRUCTED_AGENT_BIC", length = 11)
     private String instructedAgentBic;
 
-    // ===== PmtId =====
+    // ===== PmtId (Payment Identification) =====
     @Column(name = "INSTRUCTION_ID", length = 35)
     private String instructionId;
 
@@ -64,7 +64,7 @@ public class SwiftMessage {
     @Column(name = "CHARGE_BEARER", length = 4)
     private String chargeBearer;
 
-    // ===== Débiteur =====
+    // ===== Débiteur (Debtor) =====
     @Column(name = "DEBTOR_NAME", length = 140)
     private String debtorName;
 
@@ -80,7 +80,7 @@ public class SwiftMessage {
     @Column(name = "DEBTOR_ADDRESS", length = 140)
     private String debtorAddress;
 
-    // ===== Créditeur =====
+    // ===== Créditeur (Creditor) =====
     @Column(name = "CREDITOR_NAME", length = 140)
     private String creditorName;
 
@@ -96,7 +96,7 @@ public class SwiftMessage {
     @Column(name = "CREDITOR_ADDRESS", length = 140)
     private String creditorAddress;
 
-    // ===== Motif =====
+    // ===== Motif (Remittance Info) =====
     @Column(name = "REMITTANCE_INFO", length = 140)
     private String remittanceInfo;
 
@@ -104,12 +104,28 @@ public class SwiftMessage {
     @Column(name = "FILE_NAME", length = 255)
     private String fileName;
 
-    @Column(name = "STATUS", length = 20)   // RECEIVED, ARCHIVED, ACCEPTE, REJETE_AUTO, SIGNALE
+    /**
+     * Statut de la transaction selon les codes SWIFT ISO 20022.
+     * Valeurs possibles :
+     * - PDNG (Pending) : En attente de traitement
+     * - ACTC (Accepted Technical Validation) : Accepté techniquement
+     * - ACCP (Accepted) : Accepté par la banque
+     * - ACSP (Accepted Settlement In Process) : En cours de règlement
+     * - RJCT (Rejected) : Rejeté
+     */
+    @Column(name = "STATUS", length = 30)
     private String status;
 
+    /**
+     * Niveau d'alerte calculé par les règles métier.
+     * Valeurs possibles : "OK", "ATTENTION", "GRAVE"
+     */
     @Column(name = "ALERTE", length = 20)
-    private String alerte;  // valeurs: "OK", "ATTENTION", "GRAVE"
+    private String alerte;
 
+    /**
+     * Motif détaillé de l'alerte
+     */
     @Column(name = "MOTIF_ALERTE", length = 500)
     private String motifAlerte;
 
@@ -119,14 +135,43 @@ public class SwiftMessage {
     @Column(name = "ARCHIVED_AT")
     private LocalDateTime archivedAt;
 
-    // ===== Champs ajoutés pour la validation =====
+    /**
+     * Motif de rejet
+     */
     @Column(name = "REJECTION_REASON", length = 500)
     private String rejectionReason;
 
+    /**
+     * Indique si la transaction nécessite une approbation manuelle
+     */
     @Column(name = "NEEDS_AGENT_APPROVAL")
     private Boolean needsAgentApproval = false;
 
-    // Champ existant (à conserver mais mieux vaut l'annoter)
+    /**
+     * Pour les messages de type PACS002 : référence vers le message original
+     */
+    @Column(name = "ORIGINAL_MSG_ID", length = 35)
+    private String originalMsgId;
+
+    /**
+     * Statut du groupe (ACCP, RJCT, PDNG, ACTC, ACSP)
+     */
+    @Column(name = "GROUP_STATUS", length = 10)
+    private String groupStatus;
+
     @Column(name = "TRANSACTION")
     private Boolean transaction;
+
+    @PrePersist
+    protected void onCreate() {
+        if (receivedAt == null) {
+            receivedAt = LocalDateTime.now();
+        }
+        if (needsAgentApproval == null) {
+            needsAgentApproval = false;
+        }
+        if (status == null) {
+            status = "PDNG";
+        }
+    }
 }

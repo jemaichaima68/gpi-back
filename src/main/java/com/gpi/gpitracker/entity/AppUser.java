@@ -56,7 +56,7 @@ public class AppUser {
     @Column(name = "POSTAL_CODE", length = 20)
     private String postalCode;
 
-    @Column(name = "COUNTRY", length = 2)
+    @Column(name = "COUNTRY", length = 100)
     private String country;
 
     @Column(name = "DATE_CREATION")
