@@ -6,18 +6,27 @@ import com.gpi.gpitracker.service.ActivityLogService;
 import com.gpi.gpitracker.service.SwiftMessageSender;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
+import java.util.Optional;
 
 @Slf4j
 @RestController
@@ -28,6 +37,12 @@ public class AgentMessageController {
     private final SwiftMessageRepository messageRepository;
     private final ActivityLogService activityLogService;
     private final SwiftMessageSender swiftMessageSender;
+
+    @Value("${swift.received.path}")
+    private String receivedPath;
+
+    @Value("${swift.received.archive.path}")
+    private String archivePath;
 
     // ==================== ENDPOINTS EXISTANTS ====================
 
@@ -54,7 +69,147 @@ public class AgentMessageController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    // ==================== NOUVEAUX ENDPOINTS DE FILTRAGE PAR DATE ====================
+    // ==================== ENDPOINTS POUR LES FICHIERS XML ====================
+
+    /**
+     * Récupère le contenu XML d'une transaction
+     * @param id L'identifiant de la transaction
+     * @return Le contenu du fichier XML
+     */
+    @GetMapping("/{id}/xml")
+    @PreAuthorize("hasRole('BACK_OFFICE')")
+    public ResponseEntity<String> getTransactionXml(@PathVariable Long id) {
+        log.info("Demande de récupération du fichier XML pour la transaction ID: {}", id);
+
+        Optional<SwiftMessage> optionalMessage = messageRepository.findById(id);
+
+        if (!optionalMessage.isPresent()) {
+            log.warn("Transaction non trouvée pour l'ID: {}", id);
+            return ResponseEntity.notFound().build();
+        }
+
+        SwiftMessage message = optionalMessage.get();
+        String fileName = message.getFileName();
+
+        if (fileName == null || fileName.isBlank()) {
+            log.warn("Aucun nom de fichier associé à la transaction ID: {}", id);
+            return ResponseEntity.notFound().build();
+        }
+
+        // Chercher le fichier
+        File xmlFile = findXmlFile(fileName);
+
+        if (xmlFile == null || !xmlFile.exists()) {
+            log.warn("Fichier XML non trouvé pour la transaction ID: {}, fileName: {}", id, fileName);
+            return ResponseEntity.notFound().build();
+        }
+
+        try {
+            String xmlContent = Files.readString(xmlFile.toPath(), StandardCharsets.UTF_8);
+            log.info("Fichier XML trouvé et lu avec succès: {}", fileName);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_XML)
+                    .body(xmlContent);
+        } catch (IOException e) {
+            log.error("Erreur lors de la lecture du fichier XML {}: {}", fileName, e.getMessage());
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Télécharge le fichier XML d'une transaction
+     * @param id L'identifiant de la transaction
+     * @return Le fichier XML en téléchargement
+     */
+    @GetMapping("/{id}/download-xml")
+    @PreAuthorize("hasRole('BACK_OFFICE')")
+    public ResponseEntity<byte[]> downloadTransactionXml(@PathVariable Long id) {
+        log.info("Demande de téléchargement du fichier XML pour la transaction ID: {}", id);
+
+        Optional<SwiftMessage> optionalMessage = messageRepository.findById(id);
+
+        if (!optionalMessage.isPresent()) {
+            log.warn("Transaction non trouvée pour l'ID: {}", id);
+            return ResponseEntity.notFound().build();
+        }
+
+        SwiftMessage message = optionalMessage.get();
+        String fileName = message.getFileName();
+
+        if (fileName == null || fileName.isBlank()) {
+            log.warn("Aucun nom de fichier associé à la transaction ID: {}", id);
+            return ResponseEntity.notFound().build();
+        }
+
+        File xmlFile = findXmlFile(fileName);
+
+        if (xmlFile == null || !xmlFile.exists()) {
+            log.warn("Fichier XML non trouvé pour la transaction ID: {}, fileName: {}", id, fileName);
+            return ResponseEntity.notFound().build();
+        }
+
+        try {
+            byte[] fileContent = Files.readAllBytes(xmlFile.toPath());
+            log.info("Fichier XML prêt pour téléchargement: {}", fileName);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_XML);
+            headers.setContentDispositionFormData("attachment", fileName);
+            headers.setContentLength(fileContent.length);
+
+            return ResponseEntity.ok()
+                    .headers(headers)
+                    .body(fileContent);
+        } catch (IOException e) {
+            log.error("Erreur lors de la lecture du fichier XML {}: {}", fileName, e.getMessage());
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    /**
+     * Recherche le fichier XML dans les dossiers d'archive et reçus
+     * @param fileName Le nom du fichier à rechercher
+     * @return Le fichier trouvé, ou null
+     */
+    private File findXmlFile(String fileName) {
+        // Chercher d'abord dans le dossier d'archive
+        Path archiveDir = Paths.get(archivePath);
+        File archiveFile = archiveDir.resolve(fileName).toFile();
+        if (archiveFile.exists()) {
+            return archiveFile;
+        }
+
+        // Chercher ensuite dans le dossier des fichiers reçus
+        Path receivedDir = Paths.get(receivedPath);
+        File receivedFile = receivedDir.resolve(fileName).toFile();
+        if (receivedFile.exists()) {
+            return receivedFile;
+        }
+
+        // Chercher des fichiers avec timestamp dans le nom (ex: pacs.008_20240405_143022.xml)
+        if (archiveDir.toFile().exists()) {
+            String baseName = fileName.substring(0, Math.min(fileName.length() - 4, 20));
+            File[] files = archiveDir.toFile().listFiles((dir, name) ->
+                    name.startsWith(baseName) && name.endsWith(".xml"));
+            if (files != null && files.length > 0) {
+                return files[0];
+            }
+        }
+
+        // Chercher dans le dossier reçu avec pattern similaire
+        if (receivedDir.toFile().exists()) {
+            String baseName = fileName.substring(0, Math.min(fileName.length() - 4, 20));
+            File[] files = receivedDir.toFile().listFiles((dir, name) ->
+                    name.startsWith(baseName) && name.endsWith(".xml"));
+            if (files != null && files.length > 0) {
+                return files[0];
+            }
+        }
+
+        return null;
+    }
+
+    // ==================== ENDPOINTS DE FILTRAGE PAR DATE ====================
 
     /**
      * Filtrer les transactions par période prédéfinie
@@ -189,7 +344,7 @@ public class AgentMessageController {
         return ResponseEntity.ok(response);
     }
 
-    // ==================== ENDPOINTS EXISTANTS (suite) ====================
+    // ==================== ENDPOINTS DE TRAITEMENT ====================
 
     @PutMapping("/{id}/confirmation")
     @PreAuthorize("hasRole('BACK_OFFICE')")
@@ -308,7 +463,7 @@ public class AgentMessageController {
 
     @GetMapping("/stats")
     @PreAuthorize("hasRole('BACK_OFFICE')")
-    public ResponseEntity<?> getStats() {
+    public ResponseEntity<Map<String, Long>> getStats() {
         long total = messageRepository.count();
         long pacs008 = messageRepository.findByMessageType("PACS008").size();
         long pacs009 = messageRepository.findByMessageType("PACS009").size();

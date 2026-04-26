@@ -2,7 +2,9 @@
 package com.gpi.gpitracker.service;
 
 // Imports nécessaires
+import com.gpi.gpitracker.entity.BankDirectory;
 import com.gpi.gpitracker.entity.SwiftMessage;
+import com.gpi.gpitracker.repository.BankDirectoryRepository;
 import com.gpi.gpitracker.repository.SwiftMessageRepository;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -36,6 +38,9 @@ public class SwiftParserService {
 
     // Repository pour accéder à la base de données (nécessaire pour les messages PACS002)
     private final SwiftMessageRepository swiftMessageRepository;
+
+    // Repository pour l'annuaire des banques (auto-enregistrement)
+    private final BankDirectoryRepository bankDirectoryRepository;
 
     /**
      * MÉTHODE PRINCIPALE - Point d'entrée pour parser un fichier
@@ -215,6 +220,10 @@ public class SwiftParserService {
             message.setStatus("EN_ATTENTE");                 // Statut initial
             message.setReceivedAt(LocalDateTime.now());      // Date de réception
 
+            // 4. AUTO-ENREGISTREMENT DES BANQUES (PACS008)
+            autoRegisterBank(message.getDebtorAgentBic());
+            autoRegisterBank(message.getCreditorAgentBic());
+
             // LOG DE SUCCÈS
             log.info("Parsing PACS008 OK — MsgId: {} | UETR: {} | {} {} | {} → {}",
                     message.getMsgId(), message.getUetr(),
@@ -376,6 +385,10 @@ public class SwiftParserService {
             message.setStatus("EN_ATTENTE");
             message.setReceivedAt(LocalDateTime.now());
 
+            // 4. AUTO-ENREGISTREMENT DES BANQUES (PACS009)
+            autoRegisterBank(message.getInstructingAgentBic());
+            autoRegisterBank(message.getInstructedAgentBic());
+
             // LOG DE SUCCÈS
             log.info("Parsing PACS009 OK — MsgId: {} | UETR: {} | {} {} | Instg: {} → Instd: {}",
                     message.getMsgId(), message.getUetr(),
@@ -522,5 +535,45 @@ public class SwiftParserService {
         if (parent == null) return null;
         NodeList list = parent.getElementsByTagName(tagName);
         return list.getLength() > 0 ? list.item(0).getTextContent().trim() : null;
+    }
+
+    // ==================== AUTO-ENREGISTREMENT DES BANQUES ====================
+
+    /**
+     * Auto-enregistrement silencieux d'une banque
+     * Si le BIC existe déjà, on met à jour la date et le compteur
+     * Si le BIC n'existe pas, on l'ajoute
+     *
+     * @param bic Le BIC de la banque à enregistrer
+     */
+    private void autoRegisterBank(String bic) {
+        if (bic == null || bic.isBlank()) return;
+
+        try {
+            Optional<BankDirectory> existing = bankDirectoryRepository.findByBicIgnoreCase(bic);
+
+            if (existing.isPresent()) {
+                // Mise à jour : incrémenter le compteur et la date de dernière vue
+                BankDirectory bank = existing.get();
+                bank.setOccurrenceCount(bank.getOccurrenceCount() + 1);
+                bank.setLastSeenAt(LocalDateTime.now());
+                bankDirectoryRepository.save(bank);
+                log.debug("Banque déjà existante, compteur incrémenté: {}", bic);
+            } else {
+                // Nouvelle banque - ajout automatique avec informations minimales
+                BankDirectory newBank = new BankDirectory();
+                newBank.setBic(bic.toUpperCase());
+                newBank.setBankName(bic.toUpperCase()); // Nom temporaire = BIC
+                newBank.setCountryCode("??");
+                newBank.setFirstSeenAt(LocalDateTime.now());
+                newBank.setLastSeenAt(LocalDateTime.now());
+                newBank.setOccurrenceCount(1);
+
+                bankDirectoryRepository.save(newBank);
+                log.info("📝 Nouvelle banque auto-enregistrée: {}", bic);
+            }
+        } catch (Exception e) {
+            log.error("Erreur auto-enregistrement banque {}: {}", bic, e.getMessage());
+        }
     }
 }
