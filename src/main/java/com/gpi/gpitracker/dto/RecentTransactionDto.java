@@ -16,4 +16,8 @@ public class RecentTransactionDto {
     private String creditorCountry;
     private String status;
     private LocalDateTime receivedAt;
+    private String alerte;           // ← AJOUTER
+    private String motifAlerte;
+    private String messageType;
+    private String debtorCountry;
 }

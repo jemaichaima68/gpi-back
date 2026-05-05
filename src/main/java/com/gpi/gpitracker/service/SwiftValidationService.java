@@ -25,6 +25,11 @@ public class SwiftValidationService {
     public EvaluationResult evaluerTransaction(SwiftMessage message) {
         AppSettings settings = settingsService.getRawSettings();
 
+        // Vérification que le montant n'est pas null
+        if (message.getAmount() == null) {
+            return new EvaluationResult("GRAVE", "Montant manquant dans le fichier XML");
+        }
+
         // PACS009 : transfert interbancaire - règles différentes
         if ("PACS009".equals(message.getMessageType())) {
             return evaluerTransactionInterbancaire(message, settings);
@@ -37,28 +42,31 @@ public class SwiftValidationService {
     // ==================== VALIDATION CLIENT (PACS008) ====================
 
     private EvaluationResult evaluerTransactionClient(SwiftMessage message, AppSettings settings) {
+        // Le montant a déjà été vérifié non null dans evaluerTransaction()
+        double amount = message.getAmount().doubleValue();
+
         // 1. Vérification montant maximum
-        if (message.getAmount().doubleValue() > settings.getMontantMax()) {
+        if (amount > settings.getMontantMax()) {
             return new EvaluationResult("GRAVE", "Montant (" + message.getAmount() + " " + message.getCurrency() +
                     ") dépasse le plafond maximum de " + settings.getMontantMax() + " " + message.getCurrency());
         }
 
         // 2. Vérification montant minimum
-        if (message.getAmount().doubleValue() < settings.getMontantMin()) {
+        if (amount < settings.getMontantMin()) {
             return new EvaluationResult("GRAVE", "Montant (" + message.getAmount() + " " + message.getCurrency() +
                     ") inférieur au minimum requis de " + settings.getMontantMin() + " " + message.getCurrency());
         }
 
         // 3. Vérification devise autorisée
         List<String> devisesOk = Arrays.asList(settings.getDevisesAutorisees().split(","));
-        if (!devisesOk.contains(message.getCurrency())) {
+        if (message.getCurrency() == null || !devisesOk.contains(message.getCurrency())) {
             return new EvaluationResult("GRAVE", "Devise " + message.getCurrency() +
                     " non autorisée. Devises acceptées : " + settings.getDevisesAutorisees());
         }
 
         // 4. Vérification pays bénéficiaire sanctionné
         List<String> paysBloques = Arrays.asList(settings.getPaysSanctionnes().split(","));
-        if (paysBloques.contains(message.getCreditorCountry())) {
+        if (message.getCreditorCountry() != null && paysBloques.contains(message.getCreditorCountry())) {
             return new EvaluationResult("GRAVE", "Pays bénéficiaire " + message.getCreditorCountry() +
                     " est dans la liste des pays sanctionnés");
         }
@@ -70,17 +78,18 @@ public class SwiftValidationService {
     // ==================== VALIDATION INTERBANCAIRE (PACS009) ====================
 
     private EvaluationResult evaluerTransactionInterbancaire(SwiftMessage message, AppSettings settings) {
+        double amount = message.getAmount().doubleValue();
 
         // 1. Vérification montant maximum (plafond plus élevé pour interbancaire : 10x)
         double plafondInterbancaire = settings.getMontantMax() * 10;
-        if (message.getAmount().doubleValue() > plafondInterbancaire) {
+        if (amount > plafondInterbancaire) {
             return new EvaluationResult("GRAVE",
                     "Montant interbancaire (" + message.getAmount() + " " + message.getCurrency() +
                             ") dépasse le plafond maximum de " + plafondInterbancaire + " " + message.getCurrency());
         }
 
         // 2. Vérification montant minimum (même règle que client)
-        if (message.getAmount().doubleValue() < settings.getMontantMin()) {
+        if (amount < settings.getMontantMin()) {
             return new EvaluationResult("GRAVE",
                     "Montant (" + message.getAmount() + " " + message.getCurrency() +
                             ") inférieur au minimum requis de " + settings.getMontantMin() + " " + message.getCurrency());
@@ -98,9 +107,9 @@ public class SwiftValidationService {
                     "BIC de la banque bénéficiaire (Instructed Agent) manquant");
         }
 
-        // 5. Vérification devise autorisée (mêmes règles que client)
+        // 5. Vérification devise autorisée
         List<String> devisesOk = Arrays.asList(settings.getDevisesAutorisees().split(","));
-        if (!devisesOk.contains(message.getCurrency())) {
+        if (message.getCurrency() == null || !devisesOk.contains(message.getCurrency())) {
             return new EvaluationResult("GRAVE",
                     "Devise " + message.getCurrency() + " non autorisée pour transfert interbancaire");
         }
@@ -140,14 +149,15 @@ public class SwiftValidationService {
         public String getMotif() { return motif; }
     }
 
-    // ==================== MÉTHODES DÉPRÉCIÉES (conservées pour compatibilité) ====================
+    // ==================== MÉTHODES EXISTANTES (conservées) ====================
 
-    /**
-     * @deprecated Ancienne méthode de validation automatique. Utiliser evaluerTransaction() à la place.
-     */
     @Deprecated
     public String validateTransaction(SwiftMessage message) {
         AppSettings settings = settingsService.getRawSettings();
+
+        if (message.getAmount() == null) {
+            return "REJETE_AUTO";
+        }
 
         if (message.getAmount().doubleValue() < settings.getMontantMin()) {
             return "REJETE_AUTO";
@@ -156,11 +166,11 @@ public class SwiftValidationService {
             return "SIGNALE";
         }
         List<String> devisesOk = Arrays.asList(settings.getDevisesAutorisees().split(","));
-        if (!devisesOk.contains(message.getCurrency())) {
+        if (message.getCurrency() == null || !devisesOk.contains(message.getCurrency())) {
             return "REJETE_AUTO";
         }
         List<String> paysBloques = Arrays.asList(settings.getPaysSanctionnes().split(","));
-        if (paysBloques.contains(message.getCreditorCountry())) {
+        if (message.getCreditorCountry() != null && paysBloques.contains(message.getCreditorCountry())) {
             return "REJETE_AUTO";
         }
         return "ACCEPTE";
@@ -171,6 +181,11 @@ public class SwiftValidationService {
         List<SwiftMessage> pendingMessages = messageRepository.findByStatus("RECEIVED");
 
         for (SwiftMessage message : pendingMessages) {
+            if (message.getAmount() == null) {
+                log.warn("Transaction {} sans montant, ignorée", message.getMsgId());
+                continue;
+            }
+
             String oldStatus = message.getStatus();
             String newStatus = validateTransaction(message);
             message.setStatus(newStatus);
@@ -203,17 +218,21 @@ public class SwiftValidationService {
     public String getRejectionReason(SwiftMessage message) {
         AppSettings settings = settingsService.getRawSettings();
 
+        if (message.getAmount() == null) {
+            return "Montant manquant dans la transaction";
+        }
+
         if (message.getAmount().doubleValue() < settings.getMontantMin()) {
             return "Montant minimum requis : " + settings.getMontantMin() + " " + message.getCurrency();
         }
 
         List<String> devisesOk = Arrays.asList(settings.getDevisesAutorisees().split(","));
-        if (!devisesOk.contains(message.getCurrency())) {
+        if (message.getCurrency() == null || !devisesOk.contains(message.getCurrency())) {
             return "Devise non autorisée. Devises acceptées : " + settings.getDevisesAutorisees();
         }
 
         List<String> paysBloques = Arrays.asList(settings.getPaysSanctionnes().split(","));
-        if (paysBloques.contains(message.getCreditorCountry())) {
+        if (message.getCreditorCountry() != null && paysBloques.contains(message.getCreditorCountry())) {
             return "Pays bénéficiaire sanctionné : " + message.getCreditorCountry();
         }
 

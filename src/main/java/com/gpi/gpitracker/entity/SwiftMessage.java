@@ -48,6 +48,9 @@ public class SwiftMessage {
     @Column(name = "END_TO_END_ID", length = 35)
     private String endToEndId;
 
+    @Column(name = "DIRECTION", length = 3)
+    private String direction;  // "IN" pour reçu, "OUT" pour émis
+
     @Column(name = "TRANSACTION_ID", length = 35)
     private String transactionId;
 

@@ -1,7 +1,5 @@
-// Déclaration du package (organisation du code)
 package com.gpi.gpitracker.service;
 
-// Import des classes nécessaires
 import com.gpi.gpitracker.entity.SwiftMessage;
 import com.gpi.gpitracker.repository.SwiftMessageRepository;
 import org.slf4j.Logger;
@@ -10,145 +8,307 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.w3c.dom.Document;
 
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.File;
 import java.time.LocalDateTime;
 
-// Annotation indiquant que cette classe est un service Spring (géré par le conteneur)
 @Service
 public class SwiftFileWatcherService {
 
-    // Logger pour enregistrer des messages de log (info, erreur, warning)
     private static final Logger log = LoggerFactory.getLogger(SwiftFileWatcherService.class);
 
-    // Injection automatique du service de parsing XML
     @Autowired
     private SwiftParserService parserService;
 
-    // Injection automatique du service d'archivage des fichiers
     @Autowired
     private FileArchiveService archiveService;
 
-    // Injection automatique du repository pour accéder à la base de données
     @Autowired
     private SwiftMessageRepository swiftMessageRepository;
 
-    // Injection automatique du service de validation des transactions
     @Autowired
     private SwiftValidationService validationService;
 
-    // Injection de la valeur de configuration : chemin du dossier à surveiller
-    // Défini dans application.properties (ex: swift.received.path=/chemin/vers/messages_recus)
     @Value("${swift.received.path}")
     private String receivedPath;
 
-    /**
-     * Méthode exécutée automatiquement selon une périodicité définie
-     * fixedDelayString = délai entre la fin de la dernière exécution et le début de la prochaine
-     * Valeur par défaut : 30000 millisecondes (30 secondes) si non définie dans properties
-     */
+    @Value("${swift.emitted.path}")
+    private String emittedPath;
+
+    // ==================== SCAN DES MESSAGES ENTRANTS ====================
+
     @Scheduled(fixedDelayString = "${swift.watcher.delay:30000}")
     public void scanReceivedMessages() {
-        // Log d'information avec la date/heure actuelle du scan
-        log.info("=== Scan du dossier messages_recus/ [{}] ===", LocalDateTime.now());
+        log.info("=== Scan du dossier messages_recus [{}] ===", LocalDateTime.now());
 
-        // Crée un objet File représentant le dossier à surveiller
         File folder = new File(receivedPath);
-
-        // Vérifie si le dossier existe et est bien un répertoire
         if (!folder.exists() || !folder.isDirectory()) {
-            // Si le dossier n'existe pas, log d'avertissement et sortie de la méthode
-            log.warn("Dossier introuvable : {}", receivedPath);
+            log.warn("Dossier messages_recus introuvable : {}", receivedPath);
             return;
         }
 
-        // Liste tous les fichiers du dossier dont le nom se termine par ".xml" (insensible à la casse)
-        File[] xmlFiles = folder.listFiles(
-                (dir, name) -> name.toLowerCase().endsWith(".xml")
-        );
+        File[] xmlFiles = folder.listFiles((dir, name) -> name.toLowerCase().endsWith(".xml"));
 
-        // Vérifie si aucun fichier XML n'a été trouvé
         if (xmlFiles == null || xmlFiles.length == 0) {
-            log.info("Aucun fichier XML à traiter.");
+            log.info("Aucun fichier XML dans messages_recus.");
             return;
         }
 
-        // Log du nombre de fichiers XML trouvés
-        log.info("{} fichier(s) XML trouvé(s).", xmlFiles.length);
-
-        // Parcourt chaque fichier XML trouvé
         for (File xmlFile : xmlFiles) {
-            processFile(xmlFile);  // Traite le fichier un par un
+            processReceivedFile(xmlFile);
         }
     }
 
-    /**
-     * Traite un fichier XML individuel
-     * @param xmlFile Le fichier XML à traiter
-     */
-    private void processFile(File xmlFile) {
-        // Log du début du traitement du fichier
-        log.info("Traitement du fichier : {}", xmlFile.getName());
+    private void processReceivedFile(File xmlFile) {
+        log.info("Traitement du fichier entrant : {}", xmlFile.getName());
 
         try {
-            // ÉTAPE 1 : PARSING - Transforme le fichier XML en objet SwiftMessage
-            // Si le parsing échoue, message sera null
+            if (!validateXmlFile(xmlFile)) {
+                log.error("Validation XML échouée : {}", xmlFile.getName());
+                return;
+            }
+
             SwiftMessage message = parserService.parse(xmlFile);
             if (message == null) {
-                log.error("Parsing échoué pour : {}", xmlFile.getName());
-                return;  // Arrête le traitement si parsing impossible
+                log.error("Parsing échoué : {}", xmlFile.getName());
+                return;
             }
 
-            // ÉTAPE 2 : DÉDOUBLONNAGE - Vérifie si ce message a déjà été traité
-            // Utilise le msgId (identifiant unique du message SWIFT) pour éviter les doublons
+            // CONTRÔLE DOUBLON
             if (swiftMessageRepository.existsByMsgId(message.getMsgId())) {
-                log.warn("Message déjà traité (doublon) : {}. Archivage direct.", message.getMsgId());
-                archiveService.archiveReceivedFile(xmlFile.getName());  // Archive sans sauvegarder
-                return;  // Sortie de la méthode
+                log.warn("Message entrant déjà traité : {}. Archivage direct.", message.getMsgId());
+
+                boolean archived = archiveService.archiveReceivedFile(xmlFile.getName());
+                if (!archived) {
+                    log.error("Impossible d'archiver le doublon entrant : {}", xmlFile.getName());
+                }
+                return;
             }
 
-            // ÉTAPE 3 : INITIALISATION - Définit les valeurs par défaut
-            message.setStatus("EN_ATTENTE");  // Statut initial : en attente de traitement
-            message.setReceivedAt(LocalDateTime.now());  // Date/heure de réception
+            message.setDirection("IN");
+            message.setStatus("EN_ATTENTE");
+            message.setReceivedAt(LocalDateTime.now());
+            message.setFileName(xmlFile.getName());
 
-            // ÉTAPE 4 : DÉTECTION DU TYPE DE MESSAGE
-            // Vérifie si c'est un message de paiement (client ou interbancaire)
-            boolean isPaymentMessage = "PACS008".equals(message.getMessageType()) ||
-                    "PACS009".equals(message.getMessageType());
+            boolean isPaymentMessage =
+                    "PACS008".equals(message.getMessageType()) ||
+                            "PACS009".equals(message.getMessageType());
 
-            // ÉTAPE 5 : VALIDATION - Applique les règles métier uniquement aux messages de paiement
             if (isPaymentMessage) {
-                // Appelle le service de validation qui analyse la transaction
-                SwiftValidationService.EvaluationResult eval = validationService.evaluerTransaction(message);
-                // Stocke le niveau d'alerte : "OK", "ATTENTION", "GRAVE"
+                SwiftValidationService.EvaluationResult eval =
+                        validationService.evaluerTransaction(message);
+
                 message.setAlerte(eval.getAlerte());
-                // Stocke le motif détaillé de l'alerte (ex: "Montant dépasse le plafond")
                 message.setMotifAlerte(eval.getMotif());
             }
-            // Note : Les messages de type PACS002 (réponses) ne sont pas validés
 
-            // ÉTAPE 6 : SAUVEGARDE EN BASE DE DONNÉES
             swiftMessageRepository.save(message);
-            log.info("Message sauvegardé : MsgId={}, Type={}, Statut={}, Alerte={}",
-                    message.getMsgId(), message.getMessageType(), message.getStatus(), message.getAlerte());
 
-            // ÉTAPE 7 : ARCHIVAGE - Déplace le fichier XML vers le dossier d'archive
+            log.info("Message entrant sauvegardé : MsgId={}, Type={}, Statut={}",
+                    message.getMsgId(),
+                    message.getMessageType(),
+                    message.getStatus());
+
             boolean archived = archiveService.archiveReceivedFile(xmlFile.getName());
 
-            // ÉTAPE 8 : MISE À JOUR POST-ARCHIVAGE
             if (archived) {
-                // Si l'archivage a réussi, on enregistre la date d'archivage
                 message.setArchivedAt(LocalDateTime.now());
-                swiftMessageRepository.save(message);  // Met à jour le message en base
+                swiftMessageRepository.save(message);
+                log.info("Message entrant archivé : {}", message.getMsgId());
+            } else {
+                log.error("Message entrant sauvegardé mais non archivé : {}", xmlFile.getName());
             }
-            // Note : Si l'archivage échoue, le message reste en base mais le fichier n'est pas déplacé
-            // Le fichier sera retraité au prochain scan (car toujours présent dans le dossier source)
 
         } catch (Exception e) {
-            // ÉTAPE 9 : GESTION DES ERREURS
-            // Capture toute exception (problème réseau, base de données, parsing, etc.)
-            log.error("Erreur lors du traitement de {} : {}", xmlFile.getName(), e.getMessage(), e);
-            // Le fichier n'est pas archivé en cas d'erreur pour pouvoir être retraité plus tard
+            log.error("Erreur lors du traitement entrant {} : {}",
+                    xmlFile.getName(),
+                    e.getMessage(),
+                    e);
         }
+    }
+
+    // ==================== SCAN DES MESSAGES SORTANTS ====================
+
+    @Scheduled(fixedDelayString = "${swift.watcher.delay:30000}")
+    public void scanEmittedMessages() {
+        log.info("=== Scan du dossier messages_emis [{}] ===", LocalDateTime.now());
+
+        File folder = new File(emittedPath);
+        if (!folder.exists() || !folder.isDirectory()) {
+            log.warn("Dossier messages_emis introuvable : {}", emittedPath);
+            return;
+        }
+
+        File[] xmlFiles = folder.listFiles((dir, name) -> name.toLowerCase().endsWith(".xml"));
+
+        if (xmlFiles == null || xmlFiles.length == 0) {
+            log.info("Aucun fichier XML dans messages_emis.");
+            return;
+        }
+
+        for (File xmlFile : xmlFiles) {
+            processEmittedFile(xmlFile);
+        }
+    }
+
+    private void processEmittedFile(File xmlFile) {
+        log.info("Traitement du fichier sortant : {}", xmlFile.getName());
+
+        try {
+            if (!validateXmlFile(xmlFile)) {
+                log.error("Validation XML échouée : {}", xmlFile.getName());
+                return;
+            }
+
+            SwiftMessage message = parserService.parse(xmlFile);
+            if (message == null) {
+                log.error("Parsing échoué : {}", xmlFile.getName());
+                return;
+            }
+
+            // CONTRÔLE DOUBLON
+            if (swiftMessageRepository.existsByMsgId(message.getMsgId())) {
+                log.warn("Message sortant déjà traité : {}. Archivage direct.", message.getMsgId());
+
+                boolean archived = archiveService.archiveEmittedFile(xmlFile.getName());
+                if (!archived) {
+                    log.error("Impossible d'archiver le doublon sortant : {}", xmlFile.getName());
+                }
+                return;
+            }
+
+            message.setDirection("OUT");
+            message.setStatus("ENVOYE");
+            message.setReceivedAt(LocalDateTime.now());
+            message.setFileName(xmlFile.getName());
+
+            swiftMessageRepository.save(message);
+
+            log.info("Message sortant sauvegardé : MsgId={}, Type={}",
+                    message.getMsgId(),
+                    message.getMessageType());
+
+            boolean archived = archiveService.archiveEmittedFile(xmlFile.getName());
+
+            if (archived) {
+                message.setArchivedAt(LocalDateTime.now());
+                swiftMessageRepository.save(message);
+                log.info("Message sortant archivé : {}", message.getMsgId());
+            } else {
+                log.error("Message sortant sauvegardé mais non archivé : {}", xmlFile.getName());
+            }
+
+        } catch (Exception e) {
+            log.error("Erreur lors du traitement sortant {} : {}",
+                    xmlFile.getName(),
+                    e.getMessage(),
+                    e);
+        }
+    }
+
+    // ==================== VALIDATION XML ====================
+
+    private boolean validateXmlFile(File xmlFile) {
+        try {
+            if (!xmlFile.exists()) {
+                log.error("Fichier inexistant : {}", xmlFile.getName());
+                return false;
+            }
+
+            if (xmlFile.length() == 0) {
+                log.error("Fichier vide : {}", xmlFile.getName());
+                return false;
+            }
+
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setValidating(false);
+            factory.setNamespaceAware(true);
+
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            Document doc = builder.parse(xmlFile);
+
+            String fileName = xmlFile.getName().toLowerCase();
+            String messageType = detectTypeByFileName(fileName);
+
+            log.info("Type détecté pour {} : {}", xmlFile.getName(), messageType);
+
+            return validateByType(doc, messageType, xmlFile.getName());
+
+        } catch (Exception e) {
+            log.error("XML invalide : {} - {}", xmlFile.getName(), e.getMessage());
+            return false;
+        }
+    }
+
+    private String detectTypeByFileName(String fileName) {
+        if (fileName.contains("pacs.008") || fileName.contains("pacs008")) {
+            return "PACS008";
+        }
+
+        if (fileName.contains("pacs.009") || fileName.contains("pacs009")) {
+            return "PACS009";
+        }
+
+        if (fileName.contains("pacs.002") || fileName.contains("pacs002")) {
+            return "PACS002";
+        }
+
+        return "UNKNOWN";
+    }
+
+    private boolean validateByType(Document doc, String type, String fileName) {
+        switch (type) {
+            case "PACS008":
+                return validatePacs008(doc, fileName);
+
+            case "PACS009":
+                return validatePacs009(doc, fileName);
+
+            case "PACS002":
+                return validatePacs002(doc, fileName);
+
+            default:
+                log.error("Type non supporté : {}", type);
+                return false;
+        }
+    }
+
+    private boolean validatePacs008(Document doc, String fileName) {
+        boolean hasMsgId = doc.getElementsByTagName("MsgId").getLength() > 0;
+        boolean hasCreDtTm = doc.getElementsByTagName("CreDtTm").getLength() > 0;
+        boolean hasInstdAmt = doc.getElementsByTagName("InstdAmt").getLength() > 0;
+
+        if (!hasMsgId) log.error("PACS008 sans MsgId : {}", fileName);
+        if (!hasCreDtTm) log.error("PACS008 sans CreDtTm : {}", fileName);
+        if (!hasInstdAmt) log.error("PACS008 sans InstdAmt : {}", fileName);
+
+        return hasMsgId && hasCreDtTm && hasInstdAmt;
+    }
+
+    private boolean validatePacs009(Document doc, String fileName) {
+        boolean hasMsgId = doc.getElementsByTagName("MsgId").getLength() > 0;
+        boolean hasCreDtTm = doc.getElementsByTagName("CreDtTm").getLength() > 0;
+        boolean hasInstdAmt = doc.getElementsByTagName("InstdAmt").getLength() > 0;
+
+        if (!hasMsgId) log.error("PACS009 sans MsgId : {}", fileName);
+        if (!hasCreDtTm) log.error("PACS009 sans CreDtTm : {}", fileName);
+        if (!hasInstdAmt) log.error("PACS009 sans InstdAmt : {}", fileName);
+
+        return hasMsgId && hasCreDtTm && hasInstdAmt;
+    }
+
+    private boolean validatePacs002(Document doc, String fileName) {
+        boolean hasMsgId = doc.getElementsByTagName("MsgId").getLength() > 0;
+        boolean hasOrgnlMsgId = doc.getElementsByTagName("OrgnlMsgId").getLength() > 0;
+        boolean hasGrpSts = doc.getElementsByTagName("GrpSts").getLength() > 0;
+
+        if (!hasMsgId) log.error("PACS002 sans MsgId : {}", fileName);
+        if (!hasOrgnlMsgId) log.error("PACS002 sans OrgnlMsgId : {}", fileName);
+        if (!hasGrpSts) log.error("PACS002 sans GrpSts : {}", fileName);
+
+        return hasMsgId && hasOrgnlMsgId && hasGrpSts;
     }
 }

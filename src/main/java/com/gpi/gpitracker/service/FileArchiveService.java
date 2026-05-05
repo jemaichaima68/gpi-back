@@ -15,65 +15,76 @@ public class FileArchiveService {
 
     private static final Logger log = LoggerFactory.getLogger(FileArchiveService.class);
 
-    // Ces valeurs sont définies dans application.properties
+    // ==================== DOSSIERS MESSAGES REÇUS ====================
+
     @Value("${swift.received.path}")
     private String receivedPath;
 
     @Value("${swift.received.archive.path}")
-    private String archivePath;
+    private String receivedArchivePath;
 
-    /**
-     * Déplace un fichier du dossier "messages_recus" vers "messages_recus/archive"
-     *
-     * Exemple :
-     *   AVANT  : swift/messages_recus/pacs.008.xml
-     *   APRÈS  : swift/messages_recus/archive/pacs.008_20240405_143022.xml
-     *
-     * On ajoute un timestamp au nom du fichier pour éviter les écrasements.
-     */
+    // ==================== DOSSIERS MESSAGES ÉMIS ====================
+
+    @Value("${swift.emitted.path}")
+    private String emittedPath;
+
+    @Value("${swift.emitted.archive.path}")
+    private String emittedArchivePath;
+
+    // ==================== ARCHIVAGE DES MESSAGES REÇUS ====================
+
     public boolean archiveReceivedFile(String fileName) {
-        try {
-            // Chemin du fichier source (dans messages_recus)
-            Path source = Paths.get(receivedPath, fileName);
+        return archiveFile(receivedPath, receivedArchivePath, fileName, "reçu");
+    }
 
-            // Créer le dossier archive s'il n'existe pas encore
-            Path archiveDir = Paths.get(archivePath);
+    // ==================== ARCHIVAGE DES MESSAGES ÉMIS ====================
+
+    public boolean archiveEmittedFile(String fileName) {
+        return archiveFile(emittedPath, emittedArchivePath, fileName, "émis");
+    }
+
+    // ==================== MÉTHODE COMMUNE ====================
+
+    private boolean archiveFile(String sourceFolder, String archiveFolder, String fileName, String type) {
+        try {
+            Path source = Paths.get(sourceFolder, fileName);
+
+            if (!Files.exists(source)) {
+                log.error("Fichier {} introuvable pour archivage : {}", type, source);
+                return false;
+            }
+
+            Path archiveDir = Paths.get(archiveFolder);
             Files.createDirectories(archiveDir);
 
-            // Nouveau nom avec timestamp : pacs.008_20240405_143022.xml
             String archivedFileName = buildArchivedFileName(fileName);
-
-            // Chemin de destination (dans archive)
             Path destination = archiveDir.resolve(archivedFileName);
 
-            // LE MOVE : déplace le fichier (équivalent à couper/coller)
-            // REPLACE_EXISTING = si le fichier existe déjà dans archive, on le remplace
             Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
 
-            log.info("Fichier archivé avec succès : {} → {}", source, destination);
+            log.info("Fichier {} archivé avec succès : {} → {}", type, source, destination);
             return true;
 
         } catch (IOException e) {
-            log.error("Erreur lors de l'archivage du fichier {} : {}", fileName, e.getMessage());
+            log.error("Erreur lors de l'archivage du fichier {} {} : {}", type, fileName, e.getMessage());
             return false;
         }
     }
 
-    /**
-     * Construit le nouveau nom du fichier avec un timestamp
-     * Exemple : pacs.008.xml → pacs.008_20240405_143022.xml
-     */
+    // ==================== NOM DU FICHIER ARCHIVÉ ====================
+
     private String buildArchivedFileName(String originalFileName) {
         String timestamp = LocalDateTime.now()
                 .format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
 
-        // Sépare le nom de l'extension
         int dotIndex = originalFileName.lastIndexOf('.');
+
         if (dotIndex > 0) {
             String name = originalFileName.substring(0, dotIndex);
-            String ext  = originalFileName.substring(dotIndex);
+            String ext = originalFileName.substring(dotIndex);
             return name + "_" + timestamp + ext;
         }
+
         return originalFileName + "_" + timestamp;
     }
 }
