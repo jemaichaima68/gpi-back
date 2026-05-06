@@ -99,21 +99,6 @@ public class UserController {
         }
     }
 
-    // ===== RÉINITIALISER LE MOT DE PASSE =====
-    @PostMapping("/users/{id}/reset-password")
-    @PreAuthorize("hasRole('Admin')")
-    public ResponseEntity<?> resetUserPassword(@PathVariable String id) {
-        try {
-            String newPassword = userService.resetUserPassword(id);
-            return ResponseEntity.ok(Map.of(
-                    "message", "Mot de passe réinitialisé avec succès",
-                    "temporaryPassword", newPassword
-            ));
-        } catch (RuntimeException e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
-        }
-    }
-
     // ===== SUPPRIMER =====
     @DeleteMapping("/users/{id}")
     @PreAuthorize("hasRole('Admin')")

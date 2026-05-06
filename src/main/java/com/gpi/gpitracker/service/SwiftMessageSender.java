@@ -2,16 +2,20 @@ package com.gpi.gpitracker.service;
 
 import com.gpi.gpitracker.entity.SwiftMessage;
 import com.gpi.gpitracker.repository.SwiftMessageRepository;
+import com.prowidesoftware.swift.model.mx.BusinessAppHdrV04;
+import com.prowidesoftware.swift.model.mx.MxPacs00200110;
+import com.prowidesoftware.swift.model.mx.dic.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import javax.xml.transform.stream.StreamSource;
+import javax.xml.validation.SchemaFactory;
+import java.io.StringReader;
+import java.nio.file.*;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 
 @Slf4j
@@ -19,299 +23,147 @@ import java.time.format.DateTimeFormatter;
 @RequiredArgsConstructor
 public class SwiftMessageSender {
 
-    @Value("${swift.emitted.path}")
-    private String emittedPath;
-
     @Value("${swift.generate.path}")
     private String generatePath;
 
     private final SwiftMessageRepository swiftMessageRepository;
 
-    // ==================== PACS008 SORTANT (ÉMIS) ====================
-
-    /**
-     * Émet un PACS008 sortant (paiement client)
-     */
-    public void sendPacs008(SwiftMessage message) {
-        try {
-            String xml = buildPacs008Xml(message);
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-            String fileName = String.format("pacs.008_%s_%s.xml", message.getMsgId(), timestamp);
-
-            Path target = Paths.get(emittedPath, fileName);
-            Files.createDirectories(target.getParent());
-            Files.writeString(target, xml, java.nio.charset.StandardCharsets.UTF_8);
-
-            // Sauvegarde en base
-            message.setDirection("OUT");
-            message.setStatus("ENVOYE");
-            message.setFileName(fileName);
-            message.setReceivedAt(LocalDateTime.now());
-            swiftMessageRepository.save(message);
-
-            log.info("Pacs.008 sortant émis : {}", target);
-        } catch (IOException e) {
-            log.error("Erreur lors de l'écriture du pacs.008 sortant", e);
-            throw new RuntimeException("Impossible d'émettre le pacs.008", e);
-        }
-    }
-
-    private String buildPacs008Xml(SwiftMessage message) {
-        String now = LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME);
-        String uetr = message.getUetr() != null ? message.getUetr() : java.util.UUID.randomUUID().toString();
-
-        return String.format("""
-            <?xml version="1.0" encoding="UTF-8"?>
-            <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
-                <FIToFICstmrCdtTrf>
-                    <GrpHdr>
-                        <MsgId>%s</MsgId>
-                        <CreDtTm>%s</CreDtTm>
-                        <NbOfTxs>1</NbOfTxs>
-                        <SttlmInf>
-                            <SttlmMtd>INDA</SttlmMtd>
-                        </SttlmInf>
-                    </GrpHdr>
-                    <CdtTrfTxInf>
-                        <PmtId>
-                            <EndToEndId>%s</EndToEndId>
-                            <UETR>%s</UETR>
-                        </PmtId>
-                        <Amt>
-                            <InstdAmt Ccy="%s">%s</InstdAmt>
-                        </Amt>
-                        <Dbtr>
-                            <Nm>%s</Nm>
-                        </Dbtr>
-                        <Cdtr>
-                            <Nm>%s</Nm>
-                        </Cdtr>
-                        <RmtInf>
-                            <Ustrd>%s</Ustrd>
-                        </RmtInf>
-                    </CdtTrfTxInf>
-                </FIToFICstmrCdtTrf>
-            </Document>
-            """, message.getMsgId(), now, message.getEndToEndId() != null ? message.getEndToEndId() : message.getMsgId(),
-                uetr, message.getCurrency(), message.getAmount(),
-                message.getDebtorName(), message.getCreditorName(),
-                message.getRemittanceInfo() != null ? message.getRemittanceInfo() : "");
-    }
-
-    // ==================== PACS009 SORTANT (ÉMIS) ====================
-
-    /**
-     * Émet un PACS009 sortant (transfert interbancaire)
-     */
-    public void sendPacs009(SwiftMessage message) {
-        try {
-            String xml = buildPacs009Xml(message);
-            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-            String fileName = String.format("pacs.009_%s_%s.xml", message.getMsgId(), timestamp);
-
-            Path target = Paths.get(emittedPath, fileName);
-            Files.createDirectories(target.getParent());
-            Files.writeString(target, xml, java.nio.charset.StandardCharsets.UTF_8);
-
-            // Sauvegarde en base
-            message.setDirection("OUT");
-            message.setStatus("ENVOYE");
-            message.setFileName(fileName);
-            message.setReceivedAt(LocalDateTime.now());
-            swiftMessageRepository.save(message);
-
-            log.info("Pacs.009 sortant émis : {}", target);
-        } catch (IOException e) {
-            log.error("Erreur lors de l'écriture du pacs.009 sortant", e);
-            throw new RuntimeException("Impossible d'émettre le pacs.009", e);
-        }
-    }
-
-    private String buildPacs009Xml(SwiftMessage message) {
-        String now = LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME);
-        String uetr = message.getUetr() != null ? message.getUetr() : java.util.UUID.randomUUID().toString();
-
-        String endToEndId = message.getEndToEndId() != null
-                ? message.getEndToEndId()
-                : message.getMsgId();
-
-        String chargeBearer = message.getChargeBearer() != null
-                ? message.getChargeBearer()
-                : "SLEV";
-
-        String remittanceInfo = message.getRemittanceInfo() != null
-                ? message.getRemittanceInfo()
-                : "Transfert interbancaire";
-
-        String debtorIban = message.getDebtorIban() != null
-                ? message.getDebtorIban()
-                : "";
-
-        String creditorIban = message.getCreditorIban() != null
-                ? message.getCreditorIban()
-                : "";
-
-        return String.format("""
-        <?xml version="1.0" encoding="UTF-8"?>
-        <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.009.001.08">
-            <FIToFICstmrCdtTrf>
-                <GrpHdr>
-                    <MsgId>%s</MsgId>
-                    <CreDtTm>%s</CreDtTm>
-                    <NbOfTxs>1</NbOfTxs>
-                    <SttlmInf>
-                        <SttlmDt>%s</SttlmDt>
-                    </SttlmInf>
-                </GrpHdr>
-
-                <CdtTrfTxInf>
-                    <PmtId>
-                        <EndToEndId>%s</EndToEndId>
-                        <UETR>%s</UETR>
-                    </PmtId>
-
-                    <Amt>
-                        <InstdAmt Ccy="%s">%s</InstdAmt>
-                    </Amt>
-
-                    <ChrgBr>%s</ChrgBr>
-
-                    <InstgAgt>
-                        <FinInstnId>
-                            <BICFI>%s</BICFI>
-                        </FinInstnId>
-                    </InstgAgt>
-
-                    <InstdAgt>
-                        <FinInstnId>
-                            <BICFI>%s</BICFI>
-                        </FinInstnId>
-                    </InstdAgt>
-
-                    <DbtrAcct>
-                        <Id>
-                            <IBAN>%s</IBAN>
-                        </Id>
-                    </DbtrAcct>
-
-                    <CdtrAcct>
-                        <Id>
-                            <IBAN>%s</IBAN>
-                        </Id>
-                    </CdtrAcct>
-
-                    <RmtInf>
-                        <Ustrd>%s</Ustrd>
-                    </RmtInf>
-                </CdtTrfTxInf>
-            </FIToFICstmrCdtTrf>
-        </Document>
-        """,
-                message.getMsgId(),
-                now,
-                java.time.LocalDate.now(),
-                endToEndId,
-                uetr,
-                message.getCurrency(),
-                message.getAmount(),
-                chargeBearer,
-                message.getInstructingAgentBic(),
-                message.getInstructedAgentBic(),
-                debtorIban,
-                creditorIban,
-                remittanceInfo
-        );
-    }
-    // ==================== PACS002 SORTANT (RÉPONSE) ====================
+    // ==================== PACS002 ====================
 
     public Pacs002Result generatePacs002(SwiftMessage original, String decision, String reason) {
-        String xml = buildPacs002Xml(original, decision, reason);
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-        String fileName = String.format("pacs.002_%s_%s.xml", original.getMsgId(), timestamp);
 
-        // Sauvegarde sur disque
+        String fileName = "pacs002_" + original.getMsgId() + "_" +
+                LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss")) + ".xml";
+
         try {
-            Path target = Paths.get(generatePath, fileName);
-            Files.createDirectories(target.getParent());
-            Files.writeString(target, xml, java.nio.charset.StandardCharsets.UTF_8);
-            log.info("Pacs.002 sauvegardé dans msgGenerate : {}", target);
-        } catch (IOException e) {
-            log.warn("Impossible de sauvegarder le pacs.002 : {}", e.getMessage());
-        }
 
-        // Sauvegarde en base du PACS002 sortant
-        SwiftMessage emitted = new SwiftMessage();
-        emitted.setMessageType("PACS002");
-        emitted.setMsgId("MSG" + System.currentTimeMillis());
-        emitted.setDirection("OUT");
-        emitted.setStatus("ENVOYE");
-        emitted.setOriginalMsgId(original.getMsgId());
-        emitted.setUetr(original.getUetr());
-        emitted.setAmount(original.getAmount());
-        emitted.setCurrency(original.getCurrency());
-        emitted.setDebtorName(original.getDebtorName());
-        emitted.setCreditorName(original.getCreditorName());
-        emitted.setCreditorCountry(original.getCreditorCountry());
-        emitted.setReceivedAt(LocalDateTime.now());
-        emitted.setFileName(fileName);
-        emitted.setGroupStatus(decision);
-        if ("RJCT".equals(decision) && reason != null) {
-            emitted.setRejectionReason(reason);
-        }
-        swiftMessageRepository.save(emitted);
+            // ===================== 1. BUILD DOCUMENT =====================
+            MxPacs00200110 document = new MxPacs00200110();
 
-        return new Pacs002Result(xml, fileName);
+            FIToFIPaymentStatusReportV10 report = new FIToFIPaymentStatusReportV10();
+            document.setFIToFIPmtStsRpt(report);
+
+            // ===== Group Header =====
+            GroupHeader91 grpHdr = new GroupHeader91();
+            grpHdr.setMsgId("MSG" + System.currentTimeMillis());
+            grpHdr.setCreDtTm(OffsetDateTime.now());
+            report.setGrpHdr(grpHdr);
+
+            // ===== Original Group =====
+            OriginalGroupHeader17 org = new OriginalGroupHeader17();
+            org.setOrgnlMsgId(original.getMsgId());
+
+            String type = "pacs.008.001.08";
+            if ("PACS009".equals(original.getMessageType())) {
+                type = "pacs.009.001.08";
+            }
+
+            org.setOrgnlMsgNmId(type);
+            org.setGrpSts(decision);
+
+            report.getOrgnlGrpInfAndSts().add(org);
+
+            // ===== Transaction =====
+            PaymentTransaction110 tx = new PaymentTransaction110();
+            tx.setOrgnlInstrId(original.getMsgId());
+            tx.setTxSts(decision);
+
+            report.getTxInfAndSts().add(tx);
+
+            // ===================== 2. GENERATE XML =====================
+            String xml = document.message();
+            log.info("📄 PACS002 generated");
+
+            // ===================== 3. VALIDATION =====================
+            validateXml(xml);
+
+            // ===================== 4. APP HEADER =====================
+            BusinessAppHdrV04 appHdr = new BusinessAppHdrV04();
+            appHdr.setBizMsgIdr("BIZ" + System.currentTimeMillis());
+            appHdr.setMsgDefIdr("pacs.002.001.10");
+            appHdr.setCreDt(OffsetDateTime.now());
+
+            document.setAppHdr(appHdr);
+
+            String finalXml = document.message();
+
+            // ===================== 5. SAVE FILE =====================
+            Path path = Paths.get(generatePath, fileName);
+            Files.createDirectories(path.getParent());
+            Files.writeString(path, finalXml);
+
+            log.info("💾 PACS002 saved: {}", path);
+
+            // ===================== 6. SAVE DB =====================
+            SwiftMessage emitted = new SwiftMessage();
+            emitted.setMessageType("PACS002");
+            emitted.setMsgId(grpHdr.getMsgId());
+            emitted.setDirection("OUT");
+            emitted.setStatus("ENVOYE");
+            emitted.setOriginalMsgId(original.getMsgId());
+            emitted.setUetr(original.getUetr());
+            emitted.setAmount(original.getAmount());
+            emitted.setCurrency(original.getCurrency());
+            emitted.setReceivedAt(LocalDateTime.now());
+            emitted.setFileName(fileName);
+            emitted.setGroupStatus(decision);
+
+            if ("RJCT".equals(decision)) {
+                emitted.setRejectionReason(reason);
+            }
+
+            swiftMessageRepository.save(emitted);
+
+            log.info("🚀 PACS002 READY & VALID");
+
+            return new Pacs002Result(finalXml, fileName);
+
+        } catch (Exception e) {
+            log.error("❌ ERROR generating PACS002", e);
+            throw new RuntimeException(e);
+        }
     }
 
-    private String buildPacs002Xml(SwiftMessage tx, String decision, String reason) {
-        String now = LocalDateTime.now().format(DateTimeFormatter.ISO_DATE_TIME);
-        String msgId = "MSG" + System.currentTimeMillis();
+    // ==================== VALIDATION ====================
 
-        String statusReason = "";
-        if (reason != null && !reason.isBlank() && "RJCT".equals(decision)) {
-            statusReason = "<StsRsnInf><Rsn><Prtry>" + escapeXml(reason) + "</Prtry></Rsn></StsRsnInf>";
+    private void validateXml(String xml) {
+        try {
+            log.info("🔍 Validating XML against XSD...");
+
+            var factory = SchemaFactory.newInstance("http://www.w3.org/2001/XMLSchema");
+
+            var resource = getClass().getClassLoader()
+                    .getResource("xsd/pacs.002.001.10.xsd");
+
+            if (resource == null) {
+                throw new RuntimeException("❌ XSD not found in resources/xsd");
+            }
+
+            var schema = factory.newSchema(new java.io.File(resource.toURI()));
+            var validator = schema.newValidator();
+
+            validator.validate(new StreamSource(new StringReader(xml)));
+
+            log.info("✅ XML VALID (XSD OK)");
+
+        } catch (Exception e) {
+            log.error("❌ XML INVALID");
+            log.error("Reason: {}", e.getMessage());
+            throw new RuntimeException("XSD validation failed", e);
         }
-
-        String originalMsgNmId = "pacs.008.001.08";
-        if ("PACS009".equals(tx.getMessageType())) {
-            originalMsgNmId = "pacs.009.001.08";
-        }
-
-        return String.format("""
-            <?xml version="1.0" encoding="UTF-8"?>
-            <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.12">
-                <FIToFIPmtStsRpt>
-                    <GrpHdr>
-                        <MsgId>%s</MsgId>
-                        <CreDtTm>%s</CreDtTm>
-                    </GrpHdr>
-                    <OrgnlGrpInfAndSts>
-                        <OrgnlMsgId>%s</OrgnlMsgId>
-                        <OrgnlMsgNmId>%s</OrgnlMsgNmId>
-                        <GrpSts>%s</GrpSts>
-                        %s
-                    </OrgnlGrpInfAndSts>
-                </FIToFIPmtStsRpt>
-            </Document>
-            """, msgId, now, tx.getMsgId(), originalMsgNmId, decision, statusReason);
     }
 
-    private String escapeXml(String text) {
-        if (text == null) return "";
-        return text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;")
-                .replace("'", "&apos;");
-    }
+    // ==================== RESULT ====================
 
     public static class Pacs002Result {
         private final String xmlContent;
         private final String fileName;
+
         public Pacs002Result(String xmlContent, String fileName) {
             this.xmlContent = xmlContent;
             this.fileName = fileName;
         }
+
         public String getXmlContent() { return xmlContent; }
         public String getFileName() { return fileName; }
     }

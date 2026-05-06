@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -16,7 +17,22 @@ public interface SwiftMessageRepository extends JpaRepository<SwiftMessage, Long
 
     boolean existsByMsgId(String msgId);
 
+    // ✅ NOUVELLE MÉTHODE - Vérifier si UETR existe déjà (évite doublons)
+    boolean existsByUetr(String uetr);
+
     Optional<SwiftMessage> findByMsgId(String msgId);
+
+    // ⚠️ À MODIFIER pour éviter NonUniqueResultException
+    // Optional<SwiftMessage> findByUetr(String uetr);  // ← ANCIENNE, à remplacer par :
+
+    // ✅ NOUVELLE MÉTHODE - Retourne le premier (le plus récent) par UETR
+    Optional<SwiftMessage> findFirstByUetrOrderByReceivedAtDesc(String uetr);
+
+    // ✅ NOUVELLE MÉTHODE - Retourne le premier (le plus récent) par MsgId
+    Optional<SwiftMessage> findFirstByMsgIdOrderByReceivedAtDesc(String msgId);
+
+    // ✅ Garder aussi la liste si besoin
+    List<SwiftMessage> findByUetr(String uetr);
 
     List<SwiftMessage> findByMessageType(String messageType);
 
@@ -33,30 +49,33 @@ public interface SwiftMessageRepository extends JpaRepository<SwiftMessage, Long
 
     // ==================== MÉTHODES DE FILTRAGE PAR DATE ====================
 
-    /**
-     * Filtrer les transactions par date exacte
-     */
     @Query("SELECT m FROM SwiftMessage m WHERE DATE(m.receivedAt) = :date")
     List<SwiftMessage> findByReceivedDate(@Param("date") LocalDate date);
 
-    /**
-     * Filtrer les transactions par plage de dates
-     */
     List<SwiftMessage> findByReceivedAtBetween(LocalDateTime start, LocalDateTime end);
 
-    /**
-     * Filtrer les transactions reçues après une date donnée
-     */
     List<SwiftMessage> findByReceivedAtAfter(LocalDateTime date);
 
-    /**
-     * Filtrer les transactions reçues avant une date donnée
-     */
     List<SwiftMessage> findByReceivedAtBefore(LocalDateTime date);
 
-    /**
-     * Compter les transactions par date (pour les graphiques)
-     */
     @Query("SELECT DATE(m.receivedAt), COUNT(m) FROM SwiftMessage m GROUP BY DATE(m.receivedAt) ORDER BY DATE(m.receivedAt) DESC")
     List<Object[]> countTransactionsByDate();
+
+    @Query("SELECT m FROM SwiftMessage m WHERE m.clientEmail = :clientEmail" +
+            " AND (:startDate IS NULL OR m.receivedAt >= :startDate)" +
+            " AND (:endDate IS NULL OR m.receivedAt <= :endDate)" +
+            " AND (:minAmount IS NULL OR m.amount >= :minAmount)" +
+            " AND (:maxAmount IS NULL OR m.amount <= :maxAmount)" +
+            " AND (:status IS NULL OR m.status = :status)" +
+            " AND (:creditorCountry IS NULL OR m.creditorCountry = :creditorCountry)" +
+            " ORDER BY m.receivedAt DESC")
+    List<SwiftMessage> findByClientEmailAndFilters(
+            @Param("clientEmail") String clientEmail,
+            @Param("startDate") LocalDateTime startDate,
+            @Param("endDate") LocalDateTime endDate,
+            @Param("minAmount") BigDecimal minAmount,
+            @Param("maxAmount") BigDecimal maxAmount,
+            @Param("status") String status,
+            @Param("creditorCountry") String creditorCountry
+    );
 }

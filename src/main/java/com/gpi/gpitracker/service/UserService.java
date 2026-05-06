@@ -243,38 +243,7 @@ public class UserService {
         return stats;
     }
 
-    /**
-     * Réinitialiser le mot de passe d'un utilisateur
-     */
-    @Transactional
-    public String resetUserPassword(String userId) {
-        AppUser user = userRepository.findById(userId)
-                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé : " + userId));
 
-        // Générer un mot de passe temporaire sécurisé
-        String temporaryPassword = generateTemporaryPassword();
-
-        // Mettre à jour dans Keycloak
-        keycloakAdminService.resetPassword(user.getKeycloakId(), temporaryPassword, true);
-
-        // Envoyer l'email à l'agent
-        emailService.sendPasswordResetEmail(
-                user.getEmail(),
-                user.getFirstName(),
-                user.getUsername(),
-                temporaryPassword
-        );
-
-        // Logger l'action
-        activityLogService.log(
-                "RESET_PASSWORD",
-                "USER",
-                userId,
-                "Mot de passe réinitialisé pour l'utilisateur " + user.getUsername()
-        );
-
-        return temporaryPassword;
-    }
 
     /**
      * Générer un mot de passe temporaire sécurisé
