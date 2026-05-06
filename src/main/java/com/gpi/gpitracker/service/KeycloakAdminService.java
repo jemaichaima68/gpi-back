@@ -11,8 +11,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import jakarta.ws.rs.core.Response;
+import lombok.extern.slf4j.Slf4j;
 import java.util.*;
 
+@Slf4j
 @Service
 public class KeycloakAdminService {
 
@@ -116,7 +118,7 @@ public class KeycloakAdminService {
             String path = response.getLocation().getPath();
             String keycloakId = path.substring(path.lastIndexOf('/') + 1);
 
-            // Assign role — insensible à la casse (corrige "ADMIN" vs "Admin" etc.)
+            // Assign role — insensible à la casse
             RoleRepresentation roleRep = findRoleIgnoreCase(realm, role);
             users.get(keycloakId).roles().realmLevel()
                     .add(Collections.singletonList(roleRep));
@@ -285,6 +287,71 @@ public class KeycloakAdminService {
             return roles.stream()
                     .map(RoleRepresentation::getName)
                     .toList();
+        } finally {
+            keycloak.close();
+        }
+    }
+
+    // ==================== MÉTHODE POUR CHERCHER EMAIL PAR NOM/USERNAME ====================
+
+    /**
+     * Cherche l'email d'un utilisateur Keycloak par son username ou nom complet
+     * @param fullName Le username ou nom complet (ex: "foufa" ou "Haifa Jerbi")
+     * @return L'email de l'utilisateur, ou null si non trouvé
+     */
+    public String getEmailByFullName(String fullName) {
+        if (fullName == null || fullName.isBlank()) {
+            return null;
+        }
+
+        Keycloak keycloak = getKeycloak();
+        try {
+            RealmResource realm = keycloak.realm(targetRealm);
+            UsersResource users = realm.users();
+
+            log.info("🔍 Recherche email pour: '{}'", fullName);
+
+            // 1. Chercher par USERNAME (le plus simple et unique)
+            List<UserRepresentation> byUsername = users.search(fullName, true);
+            if (!byUsername.isEmpty()) {
+                String email = byUsername.get(0).getEmail();
+                if (email != null && !email.isBlank()) {
+                    log.info("✅ Email trouvé par username: {} -> {}", fullName, email);
+                    return email;
+                }
+            }
+
+            // 2. Fallback: chercher par nom complet (first name + last name)
+            List<UserRepresentation> results = users.search(fullName, 0, 10);
+            if (!results.isEmpty()) {
+                String email = results.get(0).getEmail();
+                if (email != null && !email.isBlank()) {
+                    log.info("✅ Email trouvé par recherche: {} -> {}", fullName, email);
+                    return email;
+                }
+            }
+
+            // 3. Fallback: chercher par prénom + nom séparés
+            String[] parts = fullName.trim().split(" ");
+            if (parts.length >= 2) {
+                String firstName = parts[0];
+                String lastName = parts[1];
+
+                List<UserRepresentation> byFirstName = users.search(firstName, 0, 10);
+                for (UserRepresentation user : byFirstName) {
+                    if (firstName.equalsIgnoreCase(user.getFirstName()) &&
+                            lastName.equalsIgnoreCase(user.getLastName())) {
+                        String email = user.getEmail();
+                        if (email != null && !email.isBlank()) {
+                            log.info("✅ Email trouvé par prénom+nom: {} -> {}", fullName, email);
+                            return email;
+                        }
+                    }
+                }
+            }
+
+            log.warn("❌ Aucun email trouvé pour: {}", fullName);
+            return null;
         } finally {
             keycloak.close();
         }

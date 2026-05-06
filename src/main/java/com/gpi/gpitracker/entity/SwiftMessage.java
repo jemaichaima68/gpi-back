@@ -30,7 +30,7 @@ public class SwiftMessage {
     private LocalDateTime creationDateTime;
 
     @Column(name = "NB_OF_TRANSACTIONS")
-    private int nbOfTransactions;
+    private Integer nbOfTransactions;
 
     @Column(name = "SETTLEMENT_DATE", length = 10)
     private String settlementDate;
@@ -164,6 +164,48 @@ public class SwiftMessage {
 
     @Column(name = "TRANSACTION")
     private Boolean transaction;
+
+    // ===== CHAMPS AJOUTÉS POUR LE CLIENT =====
+
+    @Column(name = "CLIENT_EMAIL", length = 100)
+    private String clientEmail;
+
+    @Column(name = "VALIDATED_AT")
+    private LocalDateTime validatedAt;
+
+    @Column(name = "VALIDATED_BY", length = 100)
+    private String validatedBy;
+
+    // ===== GETTERS ET SETTERS DES CHAMPS AJOUTÉS =====
+
+    public String getClientEmail() {
+        return clientEmail;
+    }
+
+    public void setClientEmail(String clientEmail) {
+        this.clientEmail = clientEmail;
+    }
+
+    public LocalDateTime getValidatedAt() {
+        return validatedAt;
+    }
+
+    public void setValidatedAt(LocalDateTime validatedAt) {
+        this.validatedAt = validatedAt;
+    }
+
+    public String getValidatedBy() {
+        return validatedBy;
+    }
+
+    public void setValidatedBy(String validatedBy) {
+        this.validatedBy = validatedBy;
+    }
+
+    // ===== LOMBOK GENERATED (assurons-nous que les getters/setters existent) =====
+    // Les annotations @Getter et @Setter de Lombok génèrent automatiquement
+    // les getters et setters pour tous les champs, y compris les nouveaux.
+    // Pas besoin de les écrire manuellement si Lombok fonctionne.
 
     @PrePersist
     protected void onCreate() {
