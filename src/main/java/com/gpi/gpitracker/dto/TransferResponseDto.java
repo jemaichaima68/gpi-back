@@ -23,6 +23,13 @@ public class TransferResponseDto {
     private String rejectionReason;
     private String alerte;
     private String motifAlerte;
+    private String debtorCountry;
+    private String creditorCountry;
+
+    // ⭐⭐ NOUVEAUX CHAMPS POUR L'ANNULATION ⭐⭐
+    private String cancellationReason;
+    private String cancellationReasonText;
+    private String cancellationStatus;
 
     // Champs pour le parcours bancaire
     private List<BankJourneyDto> bankJourney;
@@ -50,6 +57,14 @@ public class TransferResponseDto {
     public String getRejectionReason() { return rejectionReason; }
     public String getAlerte() { return alerte; }
     public String getMotifAlerte() { return motifAlerte; }
+    public String getDebtorCountry() { return debtorCountry; }
+    public String getCreditorCountry() { return creditorCountry; }
+
+    // ⭐⭐ NOUVEAUX GETTERS ⭐⭐
+    public String getCancellationReason() { return cancellationReason; }
+    public String getCancellationReasonText() { return cancellationReasonText; }
+    public String getCancellationStatus() { return cancellationStatus; }
+
     public List<BankJourneyDto> getBankJourney() { return bankJourney; }
     public Double getTotalFees() { return totalFees; }
     public Double getNetAmount() { return netAmount; }
@@ -72,6 +87,14 @@ public class TransferResponseDto {
     public void setRejectionReason(String rejectionReason) { this.rejectionReason = rejectionReason; }
     public void setAlerte(String alerte) { this.alerte = alerte; }
     public void setMotifAlerte(String motifAlerte) { this.motifAlerte = motifAlerte; }
+    public void setDebtorCountry(String debtorCountry) { this.debtorCountry = debtorCountry; }
+    public void setCreditorCountry(String creditorCountry) { this.creditorCountry = creditorCountry; }
+
+    // ⭐⭐ NOUVEAUX SETTERS ⭐⭐
+    public void setCancellationReason(String cancellationReason) { this.cancellationReason = cancellationReason; }
+    public void setCancellationReasonText(String cancellationReasonText) { this.cancellationReasonText = cancellationReasonText; }
+    public void setCancellationStatus(String cancellationStatus) { this.cancellationStatus = cancellationStatus; }
+
     public void setBankJourney(List<BankJourneyDto> bankJourney) { this.bankJourney = bankJourney; }
     public void setTotalFees(Double totalFees) { this.totalFees = totalFees; }
     public void setNetAmount(Double netAmount) { this.netAmount = netAmount; }

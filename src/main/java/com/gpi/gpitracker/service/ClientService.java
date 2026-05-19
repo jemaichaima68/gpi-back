@@ -8,153 +8,241 @@ import com.gpi.gpitracker.repository.BankDirectoryRepository;
 import com.gpi.gpitracker.repository.ClientConsultationRepository;
 import com.gpi.gpitracker.repository.SwiftMessageRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import jakarta.servlet.http.HttpServletResponse;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ClientService {
 
     private final SwiftMessageRepository swiftMessageRepository;
     private final ClientConsultationRepository clientConsultationRepository;
-    private final AgentValidationService agentValidationService;
     private final BankDirectoryRepository bankDirectoryRepository;
     private final BankJourneyService bankJourneyService;
 
-    // ==================== NORMALISATION STATUT ====================
-    private String normalizeStatus(String status) {
-        if (status == null || status.isBlank()) return "PDNG";
-        switch (status.toUpperCase()) {
-            case "EN_ATTENTE": case "PDNG": case "SIGNALE": return "PDNG";
-            case "ACTC": return "ACTC";
-            case "ACSP": return "ACSP";
-            case "ACCP": case "ACCEPTE": case "ACTIVE": case "VALIDATED": case "ACSC": return "ACSC";
-            case "RJCT": case "REJETE": case "REJETE_AUTO": return "RJCT";
-            default: return status.toUpperCase();
-        }
-    }
-
-    private String getStatusLabel(String status) {
-        switch (status) {
-            case "PDNG": return "En attente";
-            case "ACTC": return "Validation technique";
-            case "ACSP": return "En traitement";
-            case "ACSC": return "Accepté";
-            case "RJCT": return "Rejeté";
-            default: return status;
-        }
-    }
+    // ==================== STATUTS MÉTIER CLIENT ====================
+    private static final String STATUS_PENDING = "PDNG";
+    private static final String STATUS_ACCEPTED = "ACCEPTE";
+    private static final String STATUS_REJECTED = "REJETE";
+    private static final String STATUS_CANCEL_PENDING = "ANNULATION_EN_ATTENTE";
+    private static final String STATUS_CANCELLED = "ANNULEE";
 
     // ==================== TRANSFERTS ====================
+
     public Optional<TransferResponseDto> getTransferByUetr(String uetr, String clientEmail) {
-        Optional<SwiftMessage> message = swiftMessageRepository.findFirstByUetrOrderByReceivedAtDesc(uetr);
+        Optional<SwiftMessage> message = findClientOriginalTransactionByUetr(uetr, clientEmail);
+
         message.ifPresent(swiftMessage -> {
-            if (swiftMessage.getClientEmail() == null || swiftMessage.getClientEmail().equals(clientEmail)) {
-                clientConsultationRepository.save(
-                        new ClientConsultation(clientEmail, swiftMessage.getUetr(), LocalDateTime.now())
-                );
-            }
+            clientConsultationRepository.save(
+                    new ClientConsultation(clientEmail, swiftMessage.getUetr(), LocalDateTime.now())
+            );
         });
+
         return message.map(this::toTransferResponseDto);
     }
 
     public Optional<TransferResponseDto> getTransactionById(Long id, String clientEmail) {
         Optional<SwiftMessage> message = swiftMessageRepository.findById(id);
-        return message.map(this::toTransferResponseDto);
+
+        if (message.isEmpty()) {
+            return Optional.empty();
+        }
+
+        SwiftMessage tx = message.get();
+
+        if (clientEmail != null && tx.getClientEmail() != null && !clientEmail.equals(tx.getClientEmail())) {
+            return Optional.empty();
+        }
+
+        if (!isClientVisibleTransaction(tx)) {
+            return Optional.empty();
+        }
+
+        return Optional.of(toTransferResponseDto(tx));
     }
+
+    /**
+     * Important :
+     * Le client recherche par UETR, mais plusieurs messages peuvent porter le même UETR :
+     * PACS008, CAMT056, CAMT029...
+     * Pour l'espace client, on affiche toujours la transaction métier originale, donc PACS008.
+     */
+    private Optional<SwiftMessage> findClientOriginalTransactionByUetr(String uetr, String clientEmail) {
+        if (uetr == null || uetr.isBlank()) {
+            return Optional.empty();
+        }
+
+        return swiftMessageRepository.findAllByOrderByReceivedAtDesc().stream()
+                .filter(m -> uetr.equals(m.getUetr()))
+                .filter(this::isClientVisibleTransaction)
+                .filter(m -> clientEmail == null || m.getClientEmail() == null || clientEmail.equals(m.getClientEmail()))
+                .findFirst();
+    }
+
+    private boolean isClientVisibleTransaction(SwiftMessage message) {
+        return "PACS008".equals(message.getMessageType());
+    }
+
+// ==================== TIMELINE CLIENT SIMPLIFIÉE ====================
 
     public List<TransactionTimelineDto> getTransactionTimeline(Long id, String clientEmail) {
         Optional<SwiftMessage> opt = swiftMessageRepository.findById(id);
         if (opt.isEmpty()) return Collections.emptyList();
 
         SwiftMessage msg = opt.get();
+
+        // Vérifier que le client a accès à cette transaction
+        if (clientEmail != null && msg.getClientEmail() != null && !clientEmail.equals(msg.getClientEmail())) {
+            return Collections.emptyList();
+        }
+
         List<TransactionTimelineDto> timeline = new ArrayList<>();
 
-        Map<String, String> labels = Map.of(
-                "PDNG", "En attente", "ACTC", "Validation technique",
-                "ACSP", "En traitement", "ACSC", "Acceptée", "RJCT", "Rejetée"
-        );
+        // Étape 1 : Réception (toujours présente)
+        TransactionTimelineDto step1 = new TransactionTimelineDto();
+        step1.setStatus("RECEIVED");
+        step1.setStatusLabel("Reçue");
+        step1.setDescription("Votre transfert a été reçu par notre système.");
+        step1.setTimestamp(msg.getReceivedAt());
+        step1.setCompleted(true);
+        timeline.add(step1);
 
-        Map<String, String> icons = Map.of(
-                "PDNG", "clock", "ACTC", "check-circle",
-                "ACSP", "hourglass", "ACSC", "check-double", "RJCT", "times-circle"
-        );
+        // Étape 2 : Décision (Acceptée ou Rejetée)
+        TransactionTimelineDto step2 = new TransactionTimelineDto();
 
-        List<String> ordered = List.of("PDNG", "ACTC", "ACSP", "ACSC", "RJCT");
-        String currentStatus = msg.getStatus();
+        if ("REJETE".equals(msg.getStatus())) {
+            // Transaction rejetée
+            step2.setStatus("REJECTED");
+            step2.setStatusLabel("Rejetée");
+            String reason = msg.getRejectionReason() != null ? msg.getRejectionReason() : "Non spécifié";
+            step2.setDescription("Votre transfert a été rejeté. Motif : " + reason);
+            step2.setTimestamp(msg.getValidatedAt() != null ? msg.getValidatedAt() : msg.getReceivedAt());
+            step2.setCompleted(true);
+            timeline.add(step2);
 
-        for (String status : ordered) {
-            if ("RJCT".equals(currentStatus) && !"RJCT".equals(status)) continue;
-            TransactionTimelineDto dto = new TransactionTimelineDto();
-            dto.setStatus(status);
-            dto.setStatusLabel(labels.getOrDefault(status, status));
-            dto.setDescription("Statut " + labels.getOrDefault(status, status));
-            dto.setTimestamp(msg.getReceivedAt());
-            dto.setIcon(icons.getOrDefault(status, "info"));
-            dto.setCompleted(status.equals(currentStatus));
-            timeline.add(dto);
-            if (status.equals(currentStatus)) break;
+        } else if ("ANNULEE".equals(msg.getStatus())) {
+            // Transaction annulée (après acceptation)
+            step2.setStatus("ACCEPTED");
+            step2.setStatusLabel("Acceptée");
+            step2.setDescription("Votre transfert a été accepté par notre équipe.");
+            step2.setTimestamp(msg.getValidatedAt() != null ? msg.getValidatedAt() : msg.getReceivedAt());
+            step2.setCompleted(true);
+            timeline.add(step2);
+
+            // Étape 3 : Annulation
+            TransactionTimelineDto step3 = new TransactionTimelineDto();
+            step3.setStatus("CANCELLED");
+            step3.setStatusLabel("Annulée");
+            step3.setDescription("Votre transfert a été annulé suite à votre demande.");
+            step3.setTimestamp(msg.getArchivedAt() != null ? msg.getArchivedAt() : msg.getReceivedAt());
+            step3.setCompleted(true);
+            timeline.add(step3);
+
+        } else if ("ACCEPTE".equals(msg.getStatus())) {
+            // Transaction acceptée (finale)
+            step2.setStatus("ACCEPTED");
+            step2.setStatusLabel("Acceptée");
+            step2.setDescription("Votre transfert a été accepté et sera traité par notre réseau bancaire.");
+            step2.setTimestamp(msg.getValidatedAt() != null ? msg.getValidatedAt() : msg.getReceivedAt());
+            step2.setCompleted(true);
+            timeline.add(step2);
+
+        } else if ("ANNULATION_EN_ATTENTE".equals(msg.getStatus())) {
+            // Annulation en attente
+            step2.setStatus("ACCEPTED");
+            step2.setStatusLabel("Acceptée");
+            step2.setDescription("Votre transfert a été accepté par notre équipe.");
+            step2.setTimestamp(msg.getValidatedAt() != null ? msg.getValidatedAt() : msg.getReceivedAt());
+            step2.setCompleted(true);
+            timeline.add(step2);
+
+            // Étape 3 : Annulation en attente
+            TransactionTimelineDto step3 = new TransactionTimelineDto();
+            step3.setStatus("CANCELLATION_PENDING");
+            step3.setStatusLabel("Annulation en cours");
+            step3.setDescription("Votre demande d'annulation a été envoyée. En attente de confirmation.");
+            step3.setTimestamp(msg.getValidatedAt() != null ? msg.getValidatedAt() : msg.getReceivedAt());
+            step3.setCompleted(false);
+            timeline.add(step3);
+
+        } else {
+            // En attente de décision
+            step2.setStatus("PENDING");
+            step2.setStatusLabel("En attente");
+            step2.setDescription("Votre transfert est en cours d'analyse par notre équipe.");
+            step2.setTimestamp(null);
+            step2.setCompleted(false);
+            timeline.add(step2);
         }
+
         return timeline;
     }
 
     public Map<String, String> getRejectionReason(Long id, String clientEmail) {
         Optional<SwiftMessage> opt = swiftMessageRepository.findById(id);
-        if (opt.isEmpty()) return Map.of();
-        return Map.of("rejectionReason", Optional.ofNullable(opt.get().getRejectionReason()).orElse(""));
-    }
-
-    // ==================== HISTORIQUE ====================
-    public List<ConsultationHistoryDto> getConsultationHistory(String clientEmail) {
-        return clientConsultationRepository.findByClientEmailOrderByConsultedAtDesc(clientEmail)
-                .stream()
-                .map(this::toConsultationHistoryDto)
-                .collect(Collectors.toList());
-    }
-
-    @Transactional
-    public boolean deleteConsultationHistory(Long id, String clientEmail) {
-        Optional<ClientConsultation> consultation = clientConsultationRepository.findById(id);
-        if (consultation.isPresent() && consultation.get().getClientEmail().equals(clientEmail)) {
-            clientConsultationRepository.deleteById(id);
-            return true;
+        if (opt.isEmpty()) {
+            return Map.of();
         }
-        return false;
-    }
 
-    @Transactional
-    public int deleteAllConsultationHistory(String clientEmail) {
-        List<ClientConsultation> consultations = clientConsultationRepository
-                .findByClientEmailOrderByConsultedAtDesc(clientEmail);
-        int count = consultations.size();
-        if (count > 0) {
-            clientConsultationRepository.deleteAll(consultations);
+        SwiftMessage msg = opt.get();
+
+        if (msg.getClientEmail() != null && !msg.getClientEmail().equals(clientEmail)) {
+            return Map.of();
         }
-        return count;
+
+        Map<String, String> result = new HashMap<>();
+        result.put("rejectionReason", msg.getRejectionReason() != null ? msg.getRejectionReason() : "");
+        result.put("rejectedAt", msg.getValidatedAt() != null ? msg.getValidatedAt().toString() : "");
+        result.put("rejectedBy", msg.getValidatedBy() != null ? msg.getValidatedBy() : "");
+        return result;
     }
 
     // ==================== DASHBOARD ====================
+
     public ClientDashboardDto getClientDashboard(String clientEmail) {
         List<SwiftMessage> messages = swiftMessageRepository.findAllByOrderByReceivedAtDesc().stream()
-                .filter(m -> clientEmail.equals(m.getClientEmail()))
+                .filter(m -> clientEmail != null && clientEmail.equals(m.getClientEmail()))
+                .filter(this::isClientVisibleTransaction)
                 .collect(Collectors.toList());
+
+        log.info("Dashboard client {} : {} transaction(s)", clientEmail, messages.size());
 
         ClientDashboardDto dto = new ClientDashboardDto();
         dto.setTotalTransactions((long) messages.size());
-        dto.setPendingTransactions(messages.stream().filter(m -> "PDNG".equals(m.getStatus())).count());
-        dto.setAcceptedTransactions(messages.stream().filter(m -> "ACSC".equals(m.getStatus()) || "ACSP".equals(m.getStatus())).count());
-        dto.setRejectedTransactions(messages.stream().filter(m -> "RJCT".equals(m.getStatus())).count());
-        dto.setTotalAmount(messages.stream().map(SwiftMessage::getAmount).filter(Objects::nonNull).reduce(BigDecimal.ZERO, BigDecimal::add));
+
+        dto.setPendingTransactions(messages.stream()
+                .filter(m -> STATUS_PENDING.equals(m.getStatus()))
+                .count());
+
+        dto.setAcceptedTransactions(messages.stream()
+                .filter(m -> STATUS_ACCEPTED.equals(m.getStatus())
+                        || STATUS_CANCEL_PENDING.equals(m.getStatus())
+                        || STATUS_CANCELLED.equals(m.getStatus()))
+                .count());
+
+        dto.setRejectedTransactions(messages.stream()
+                .filter(m -> STATUS_REJECTED.equals(m.getStatus()))
+                .count());
+
+        dto.setTotalAmount(messages.stream()
+                .map(SwiftMessage::getAmount)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
+
+        dto.setAverageProcessingTimeHours(0.0);
 
         dto.setRecentTransactions(messages.stream().limit(5).map(m -> {
             RecentTransactionDto recentDto = new RecentTransactionDto();
             recentDto.setId(m.getId());
+            recentDto.setMsgId(m.getMsgId());
             recentDto.setUetr(m.getUetr());
             recentDto.setStatus(m.getStatus());
             recentDto.setAmount(m.getAmount());
@@ -162,99 +250,27 @@ public class ClientService {
             recentDto.setCreditorName(m.getCreditorName());
             recentDto.setDebtorName(m.getDebtorName());
             recentDto.setReceivedAt(m.getReceivedAt());
+            recentDto.setDebtorCountry(m.getDebtorCountry());
+            recentDto.setCreditorCountry(m.getCreditorCountry());
+            recentDto.setAlerte(m.getAlerte());
+            recentDto.setMotifAlerte(m.getMotifAlerte());
+            recentDto.setMessageType(m.getMessageType());
+            recentDto.setAgentValidated(m.getAgentValidated());
+            recentDto.setRejectionReason(m.getRejectionReason());
             return recentDto;
         }).collect(Collectors.toList()));
 
-        dto.setStatusDistribution(messages.stream().collect(Collectors.groupingBy(SwiftMessage::getStatus, Collectors.counting())));
+        dto.setStatusDistribution(messages.stream()
+                .collect(Collectors.groupingBy(SwiftMessage::getStatus, Collectors.counting())));
+
         return dto;
     }
 
-    // ==================== FILTRAGE ====================
-    public List<SwiftMessage> filterClientTransactions(String clientEmail, LocalDateTime startDate, LocalDateTime endDate,
-                                                       BigDecimal minAmount, BigDecimal maxAmount, String status, String creditorCountry) {
-        return swiftMessageRepository.findAllByOrderByReceivedAtDesc().stream()
-                .filter(m -> clientEmail.equals(m.getClientEmail()))
-                .filter(m -> startDate == null || m.getReceivedAt().isAfter(startDate))
-                .filter(m -> endDate == null || m.getReceivedAt().isBefore(endDate))
-                .filter(m -> minAmount == null || m.getAmount().compareTo(minAmount) >= 0)
-                .filter(m -> maxAmount == null || m.getAmount().compareTo(maxAmount) <= 0)
-                .filter(m -> status == null || status.equals(m.getStatus()))
-                .filter(m -> creditorCountry == null || creditorCountry.equals(m.getCreditorCountry()))
-                .collect(Collectors.toList());
-    }
-
-    // ==================== EXPORTS ====================
-    public void exportTransactionsPdf(HttpServletResponse response) {
-        throw new UnsupportedOperationException("Export PDF à implémenter");
-    }
-
-    public void exportTransactionsExcel(HttpServletResponse response) {
-        throw new UnsupportedOperationException("Export Excel à implémenter");
-    }
-
-    // ==================== GESTION PARCOURS BANCAIRE ====================
-    @Transactional
-    public void saveBankJourneyFromSwiftMessage(SwiftMessage message) {
-        String clientEmail = message.getClientEmail();
-        if (clientEmail == null || clientEmail.isBlank()) return;
-
-        List<BankJourneyInputDto> steps = extractBankStepsFromMessage(message);
-        if (!steps.isEmpty()) {
-            bankJourneyService.saveBankJourney(message.getUetr(), message.getId(), clientEmail, steps);
-        }
-    }
-
-    @Transactional
-    public void deleteBankJourneyByUetr(String uetr, String clientEmail) {
-        bankJourneyService.deleteByUetr(uetr, clientEmail);
-    }
-
-    private List<BankJourneyInputDto> extractBankStepsFromMessage(SwiftMessage message) {
-        List<BankJourneyInputDto> steps = new ArrayList<>();
-
-        // Étape 1: Banque émettrice
-        if (message.getDebtorAgentBic() != null && !message.getDebtorAgentBic().isBlank()) {
-            BankJourneyInputDto step = new BankJourneyInputDto();
-            step.setBankName(getBankNameFromBic(message.getDebtorAgentBic()));
-            step.setBankBic(message.getDebtorAgentBic());
-            step.setRole("Banque Émettrice");
-            step.setFees(BigDecimal.valueOf(calculateEmitterFees(message)));
-            step.setFeesCurrency(message.getCurrency());
-            step.setStatus("Envoyé");
-            steps.add(step);
-        }
-
-        // Dernière étape: Banque bénéficiaire
-        if (message.getCreditorAgentBic() != null && !message.getCreditorAgentBic().isBlank()) {
-            BankJourneyInputDto lastStep = new BankJourneyInputDto();
-            lastStep.setBankName(getBankNameFromBic(message.getCreditorAgentBic()));
-            lastStep.setBankBic(message.getCreditorAgentBic());
-            lastStep.setRole("Banque Bénéficiaire finale");
-            lastStep.setFees(null);
-            lastStep.setFeesCurrency(null);
-            lastStep.setStatus(getFinalStepStatus(message));
-            steps.add(lastStep);
-        }
-
-        return steps;
-    }
-
-    private Double calculateEmitterFees(SwiftMessage message) {
-        double amount = message.getAmount() != null ? message.getAmount().doubleValue() : 0;
-        return amount * 0.005;
-    }
-
-    private String getFinalStepStatus(SwiftMessage message) {
-        String status = message.getStatus();
-        if ("ACSC".equals(status) || "ACCEPTE".equals(status)) return "Terminé";
-        if ("RJCT".equals(status) || "REJETE".equals(status)) return "Rejeté";
-        if ("ACSP".equals(status) || "ACTC".equals(status)) return "En cours";
-        return "En attente";
-    }
-
     // ==================== CONVERSIONS ====================
+
     private TransferResponseDto toTransferResponseDto(SwiftMessage message) {
         TransferResponseDto dto = new TransferResponseDto();
+
         dto.setId(message.getId());
         dto.setUetr(message.getUetr());
         dto.setAmount(message.getAmount());
@@ -266,14 +282,18 @@ public class ClientService {
         dto.setDebtorName(message.getDebtorName());
         dto.setCreditorName(message.getCreditorName());
         dto.setCreditorAgentBic(message.getCreditorAgentBic());
-        dto.setStatus(agentValidationService != null ? agentValidationService.normalizeStatus(message.getStatus()) : normalizeStatus(message.getStatus()));
+        dto.setDebtorCountry(message.getDebtorCountry());
+        dto.setCreditorCountry(message.getCreditorCountry());
+        dto.setStatus(message.getStatus());
         dto.setCreatedAt(message.getReceivedAt());
-        dto.setUpdatedAt(message.getReceivedAt());
+        dto.setUpdatedAt(message.getValidatedAt() != null ? message.getValidatedAt() : message.getReceivedAt());
         dto.setRejectionReason(message.getRejectionReason());
         dto.setAlerte(message.getAlerte());
         dto.setMotifAlerte(message.getMotifAlerte());
+        dto.setCancellationReason(message.getCancellationReason());
+        dto.setCancellationReasonText(message.getCancellationReasonText());
+        dto.setCancellationStatus(message.getCancellationStatus());
 
-        // Récupération du parcours bancaire depuis la base
         List<BankJourneyDto> journey = bankJourneyService.getBankJourneyByUetr(message.getUetr(), message.getClientEmail());
         dto.setBankJourney(journey);
         dto.setTotalFees(calculateTotalFeesFromSteps(journey));
@@ -284,23 +304,35 @@ public class ClientService {
 
     private Double calculateTotalFeesFromSteps(List<BankJourneyDto> journey) {
         double total = 0.0;
+
+        if (journey == null) {
+            return total;
+        }
+
         for (BankJourneyDto step : journey) {
             if (step.getFees() != null && !step.getFees().isBlank()) {
                 try {
                     String feesStr = step.getFees().replace(",", ".").replaceAll("[^0-9.]", "");
-                    total += Double.parseDouble(feesStr);
-                } catch (NumberFormatException e) { }
+                    if (!feesStr.isBlank()) {
+                        total += Double.parseDouble(feesStr);
+                    }
+                } catch (NumberFormatException ignored) { }
             }
         }
+
         return total;
     }
 
     private Double calculateNetAmountFromSteps(SwiftMessage message, List<BankJourneyDto> journey) {
-        double amount = message.getAmount() != null ? message.getAmount().doubleValue() : 0;
+        double amount = message.getAmount() != null ? message.getAmount().doubleValue() : 0.0;
         double totalFees = calculateTotalFeesFromSteps(journey);
         double net = amount - totalFees;
-        if ("EUR".equals(message.getCurrency()) && net > 0) net = net * 1.09;
-        return net > 0 ? net : 0;
+
+        if ("EUR".equals(message.getCurrency()) && net > 0) {
+            net = net * 1.09;
+        }
+
+        return Math.max(net, 0.0);
     }
 
     private String getBankNameFromBic(String bic) {
@@ -312,23 +344,112 @@ public class ClientService {
 
     private ConsultationHistoryDto toConsultationHistoryDto(ClientConsultation consultation) {
         ConsultationHistoryDto dto = new ConsultationHistoryDto();
+
         dto.setId(consultation.getId());
         dto.setUetr(consultation.getUetr());
         dto.setConsultedAt(consultation.getConsultedAt());
 
-        Optional<SwiftMessage> msg = swiftMessageRepository.findFirstByUetrOrderByReceivedAtDesc(consultation.getUetr());
+        Optional<SwiftMessage> msg = findClientOriginalTransactionByUetr(
+                consultation.getUetr(),
+                consultation.getClientEmail()
+        );
+
         if (msg.isPresent()) {
             SwiftMessage m = msg.get();
             dto.setStatus(m.getStatus());
             dto.setAmount(m.getAmount());
             dto.setCurrency(m.getCurrency());
-            dto.setUpdatedAt(m.getReceivedAt());
+            dto.setUpdatedAt(m.getValidatedAt() != null ? m.getValidatedAt() : m.getReceivedAt());
         } else {
-            dto.setStatus("PDNG");
+            dto.setStatus(STATUS_PENDING);
             dto.setAmount(BigDecimal.ZERO);
             dto.setCurrency("EUR");
             dto.setUpdatedAt(consultation.getConsultedAt());
         }
+
         return dto;
+    }
+
+    // ==================== FILTRAGE ====================
+
+    public List<SwiftMessage> filterClientTransactions(String clientEmail,
+                                                       LocalDateTime startDate,
+                                                       LocalDateTime endDate,
+                                                       BigDecimal minAmount,
+                                                       BigDecimal maxAmount,
+                                                       String status,
+                                                       String creditorCountry) {
+        return swiftMessageRepository.findAllByOrderByReceivedAtDesc().stream()
+                .filter(m -> clientEmail != null && clientEmail.equals(m.getClientEmail()))
+                .filter(this::isClientVisibleTransaction)
+                .filter(m -> startDate == null || (m.getReceivedAt() != null && m.getReceivedAt().isAfter(startDate)))
+                .filter(m -> endDate == null || (m.getReceivedAt() != null && m.getReceivedAt().isBefore(endDate)))
+                .filter(m -> minAmount == null || (m.getAmount() != null && m.getAmount().compareTo(minAmount) >= 0))
+                .filter(m -> maxAmount == null || (m.getAmount() != null && m.getAmount().compareTo(maxAmount) <= 0))
+                .filter(m -> status == null || status.isBlank() || (m.getStatus() != null && m.getStatus().equals(status)))
+                .filter(m -> creditorCountry == null || creditorCountry.isBlank()
+                        || (m.getCreditorCountry() != null && m.getCreditorCountry().equals(creditorCountry)))
+                .collect(Collectors.toList());
+    }
+
+    // ==================== HISTORIQUE ====================
+
+    public List<ConsultationHistoryDto> getConsultationHistory(String clientEmail) {
+        return clientConsultationRepository.findByClientEmailOrderByConsultedAtDesc(clientEmail)
+                .stream()
+                .map(this::toConsultationHistoryDto)
+                .collect(Collectors.toList());
+    }
+
+    @Transactional
+    public boolean deleteConsultationHistory(Long id, String clientEmail) {
+        Optional<ClientConsultation> consultation = clientConsultationRepository.findById(id);
+
+        if (consultation.isPresent() && consultation.get().getClientEmail().equals(clientEmail)) {
+            clientConsultationRepository.deleteById(id);
+            return true;
+        }
+
+        return false;
+    }
+
+    @Transactional
+    public int deleteAllConsultationHistory(String clientEmail) {
+        List<ClientConsultation> consultations =
+                clientConsultationRepository.findByClientEmailOrderByConsultedAtDesc(clientEmail);
+
+        int count = consultations.size();
+
+        if (count > 0) {
+            clientConsultationRepository.deleteAll(consultations);
+        }
+
+        return count;
+    }
+
+    // ==================== EXPORTS ====================
+
+    public void exportTransactionsPdf(HttpServletResponse response) {
+        try {
+            response.setContentType("application/pdf");
+            response.setHeader("Content-Disposition", "attachment; filename=transactions.pdf");
+            response.getWriter().write("Export PDF - À implémenter");
+            response.getWriter().flush();
+        } catch (Exception e) {
+            log.error("Erreur export PDF : {}", e.getMessage());
+            throw new RuntimeException("Erreur lors de l'export PDF", e);
+        }
+    }
+
+    public void exportTransactionsExcel(HttpServletResponse response) {
+        try {
+            response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            response.setHeader("Content-Disposition", "attachment; filename=transactions.xlsx");
+            response.getWriter().write("Export Excel - À implémenter");
+            response.getWriter().flush();
+        } catch (Exception e) {
+            log.error("Erreur export Excel : {}", e.getMessage());
+            throw new RuntimeException("Erreur lors de l'export Excel", e);
+        }
     }
 }

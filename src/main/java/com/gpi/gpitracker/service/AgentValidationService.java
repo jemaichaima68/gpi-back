@@ -37,67 +37,29 @@ public class AgentValidationService {
         SwiftMessage message = swiftMessageRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Transaction non trouvée: " + id));
 
-        String oldStatus = message.getStatus();
-
-        // ============================================================
-        // 🔥 DEBUG - AFFICHAGE FORCÉ
-        // ============================================================
-        log.info("╔══════════════════════════════════════════════════════════════╗");
-        log.info("║         ACCEPT TRANSACTION - DEBUG MODE ACTIVÉ              ║");
-        log.info("╚══════════════════════════════════════════════════════════════╝");
-        log.info("🔍 ID: {}", id);
-        log.info("🔍 ClientEmail avant: '{}'", message.getClientEmail());
-        log.info("🔍 DebtorName: '{}'", message.getDebtorName());
-        log.info("🔍 UETR: '{}'", message.getUetr());
-        log.info("🔍 Status actuel: '{}'", oldStatus);
-        log.info("================================================================");
+        log.info(" ACCEPTATION: Transaction {} acceptée par {}", message.getMsgId(), validatedBy);
 
         // Récupération email si null
         if (message.getClientEmail() == null || message.getClientEmail().isBlank()) {
-            log.info("📧 ClientEmail est null, recherche dans Keycloak...");
             String debtorName = message.getDebtorName();
             if (debtorName != null && !debtorName.isBlank()) {
                 String email = keycloakAdminService.getEmailByFullName(debtorName);
                 if (email != null) {
                     message.setClientEmail(email);
-                    log.info("✅ Email récupéré depuis Keycloak pour {} : {}", debtorName, email);
-                    swiftMessageRepository.save(message);
-                } else {
-                    log.warn("⚠️ Aucun email trouvé dans Keycloak pour le nom: {}", debtorName);
+                    log.info("Email récupéré: {}", email);
                 }
             }
         }
 
-        // Mise à jour status
+        // ⭐ SIMPLIFICATION: Statut passe directement à ACCEPTE
         message.setStatus("ACCEPTE");
+        message.setAgentValidated(true);
         message.setValidatedAt(LocalDateTime.now());
         message.setValidatedBy(validatedBy);
         swiftMessageRepository.save(message);
 
-        // Log activity
-        activityLogService.log(
-                "ACCEPTE",
-                "TRANSACTION",
-                String.valueOf(message.getId()),
-                "Transaction " + message.getMsgId() + " acceptée par " + validatedBy
-        );
-
-        // ============================================================
-        // 🔥 ENVOI EMAIL - LOGS DÉTAILLÉS
-        // ============================================================
-        log.info("┌─────────────────────────────────────────────────────────────┐");
-        log.info("│              TENTATIVE D'ENVOI EMAIL                        │");
-        log.info("├─────────────────────────────────────────────────────────────┤");
-        log.info("│ ClientEmail: '{}'", message.getClientEmail());
-        log.info("│ ClientEmail is null: {}", message.getClientEmail() == null);
-        log.info("│ ClientEmail is blank: {}", message.getClientEmail() == null || message.getClientEmail().isBlank());
-        log.info("│ DebtorName: '{}'", message.getDebtorName());
-        log.info("│ UETR: '{}'", message.getUetr());
-        log.info("└─────────────────────────────────────────────────────────────┘");
-
-        boolean emailSent = false;
+        // Notification au client
         if (message.getClientEmail() != null && !message.getClientEmail().isBlank()) {
-            log.info("📧 [ACTION] Appel de sendTransactionAcceptedEmailSync à: {}", message.getClientEmail());
             try {
                 emailService.sendTransactionAcceptedEmailSync(
                         message.getClientEmail(),
@@ -106,35 +68,26 @@ public class AgentValidationService {
                         message.getAmount(),
                         message.getCurrency()
                 );
-                emailSent = true;
-                log.info("✅ [SUCCÈS] Email acceptation envoyé avec succès à {}", message.getClientEmail());
+                log.info(" Email acceptation envoyé");
             } catch (Exception e) {
-                log.error("❌ [ERREUR] Échec envoi email: {}", e.getMessage(), e);
+                log.error(" Erreur email: {}", e.getMessage());
             }
-        } else {
-            log.error("❌ [BLOQUÉ] Email non envoyé - clientEmail est null ou vide");
+
+            notificationService.createNotification(
+                    message.getClientEmail(),
+                    " Transaction acceptée",
+                    "Votre transaction a été acceptée avec succès.",
+                    "success",
+                    message.getUetr()
+            );
         }
 
-        // Notification interface
-        if (message.getClientEmail() != null && !message.getClientEmail().isBlank()) {
-            try {
-                notificationService.notifyStatusChange(
-                        message.getClientEmail(),
-                        message.getDebtorName(),
-                        message.getUetr(),
-                        "ACSC",
-                        null
-                );
-                log.info("🔔 Notification acceptation envoyée à: {}", message.getClientEmail());
-            } catch (Exception e) {
-                log.error("❌ Erreur notification: {}", e.getMessage());
-            }
-        }
-
-        log.info("╔══════════════════════════════════════════════════════════════╗");
-        log.info("║ RÉSUMÉ - Email envoyé: {}                                      ║", emailSent);
-        log.info("║ Transaction {} acceptée ({} → {})", message.getMsgId(), oldStatus, message.getStatus());
-        log.info("╚══════════════════════════════════════════════════════════════╝");
+        activityLogService.log(
+                "ACCEPTE",
+                "TRANSACTION",
+                String.valueOf(message.getId()),
+                "Transaction " + message.getMsgId() + " acceptée par " + validatedBy
+        );
 
         return message;
     }
@@ -144,45 +97,31 @@ public class AgentValidationService {
         SwiftMessage message = swiftMessageRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Transaction non trouvée: " + id));
 
-        String oldStatus = message.getStatus();
+        log.info(" REJET: Transaction {} rejetée par {}", message.getMsgId(), rejectedBy);
+        log.info("   Motif: {}", motif);
 
-        log.info("╔══════════════════════════════════════════════════════════════╗");
-        log.info("║              REJECT TRANSACTION - DEBUG MODE                 ║");
-        log.info("╚══════════════════════════════════════════════════════════════╝");
-        log.info("🔍 ID: {}", id);
-        log.info("🔍 ClientEmail avant: '{}'", message.getClientEmail());
-        log.info("🔍 DebtorName: '{}'", message.getDebtorName());
-        log.info("🔍 UETR: '{}'", message.getUetr());
-        log.info("🔍 Motif: '{}'", motif);
-
+        // Récupération email si null
         if (message.getClientEmail() == null || message.getClientEmail().isBlank()) {
             String debtorName = message.getDebtorName();
             if (debtorName != null && !debtorName.isBlank()) {
                 String email = keycloakAdminService.getEmailByFullName(debtorName);
                 if (email != null) {
                     message.setClientEmail(email);
-                    log.info("✅ Email récupéré depuis Keycloak: {}", email);
-                    swiftMessageRepository.save(message);
+                    log.info(" Email récupéré: {}", email);
                 }
             }
         }
 
+        // ⭐ SIMPLIFICATION: Statut passe directement à REJETE
         message.setStatus("REJETE");
         message.setRejectionReason(motif);
+        message.setAgentValidated(true);
         message.setValidatedAt(LocalDateTime.now());
         message.setValidatedBy(rejectedBy);
         swiftMessageRepository.save(message);
 
-        activityLogService.log(
-                "REJETE",
-                "TRANSACTION",
-                String.valueOf(message.getId()),
-                "Transaction " + message.getMsgId() + " rejetée par " + rejectedBy
-        );
-
-        boolean emailSent = false;
+        // Notification au client avec le motif
         if (message.getClientEmail() != null && !message.getClientEmail().isBlank()) {
-            log.info("📧 Envoi email rejet à: {}", message.getClientEmail());
             try {
                 emailService.sendTransactionRejectedEmailSync(
                         message.getClientEmail(),
@@ -190,24 +129,27 @@ public class AgentValidationService {
                         message.getUetr(),
                         motif
                 );
-                emailSent = true;
-                log.info("✅ Email rejet envoyé");
+                log.info("Email rejet envoyé");
             } catch (Exception e) {
-                log.error("❌ Erreur: {}", e.getMessage());
+                log.error(" Erreur email: {}", e.getMessage());
             }
-        }
 
-        if (message.getClientEmail() != null && !message.getClientEmail().isBlank()) {
-            notificationService.notifyStatusChange(
+            notificationService.createNotification(
                     message.getClientEmail(),
-                    message.getDebtorName(),
-                    message.getUetr(),
-                    "RJCT",
-                    motif
+                    " Transaction rejetée",
+                    "Votre transaction a été rejetée. Motif: " + motif,
+                    "error",
+                    message.getUetr()
             );
         }
 
-        log.info("Transaction {} rejetée - Email: {}", message.getMsgId(), emailSent);
+        activityLogService.log(
+                "REJETE",
+                "TRANSACTION",
+                String.valueOf(message.getId()),
+                "Transaction " + message.getMsgId() + " rejetée par " + rejectedBy + " - Motif: " + motif
+        );
+
         return message;
     }
 

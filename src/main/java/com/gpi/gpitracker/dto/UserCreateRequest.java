@@ -21,4 +21,5 @@ public class UserCreateRequest {
     private String city;
     private String postalCode;
     private String country;
+    private String iban;
 }

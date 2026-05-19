@@ -65,6 +65,9 @@ public class AppUser {
     @Column(name = "DATE_MODIFICATION")
     private LocalDateTime dateModification;
 
+    @Column(name = "IBAN", length = 34, unique = true)
+    private String iban;
+
     @PrePersist
     protected void onCreate() {
         dateCreation = LocalDateTime.now();
