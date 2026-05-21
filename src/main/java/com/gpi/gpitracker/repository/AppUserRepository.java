@@ -19,6 +19,8 @@ public interface AppUserRepository extends JpaRepository<AppUser, String> {
     // Trouver par username
     Optional<AppUser> findByUsername(String username);
 
+    Optional<AppUser> findByIban(String iban);
+
     // Filtrer par rôle
     List<AppUser> findByRole(String role);
 
@@ -27,4 +29,6 @@ public interface AppUserRepository extends JpaRepository<AppUser, String> {
 
     // Filtrer par rôle et statut
     List<AppUser> findByRoleAndActif(String role, Integer actif);
+
+
 }

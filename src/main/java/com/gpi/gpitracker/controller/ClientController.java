@@ -88,7 +88,7 @@ public class ClientController {
             return ResponseEntity.notFound().build();
         }
 
-        // ✅ جلب المسار البنكي بواسطة Transaction ID
+
         List<BankJourneyDto> bankJourney = bankJourneyService.getBankJourneyByTransactionId(id, clientEmail);
         transfer.setBankJourney(bankJourney);
 

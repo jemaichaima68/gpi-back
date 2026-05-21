@@ -16,8 +16,10 @@ public class RecentTransactionDto {
     private String creditorCountry;
     private String status;
     private LocalDateTime receivedAt;
-    private String alerte;           // ← AJOUTER
+    private String alerte;
     private String motifAlerte;
     private String messageType;
     private String debtorCountry;
+    private Boolean agentValidated;
+    private String rejectionReason;
 }

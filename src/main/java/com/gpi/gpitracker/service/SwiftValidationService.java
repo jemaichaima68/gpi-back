@@ -198,7 +198,8 @@ public class SwiftValidationService {
                 message.setRejectionReason(reason);
                 description += " - Motif: " + reason;
             } else if ("SIGNALE".equals(newStatus)) {
-                message.setNeedsAgentApproval(true);
+                // Remplacer setNeedsAgentApproval par setAgentValidated(false)
+                message.setAgentValidated(false);  // ← Correction ici
                 description += " - En attente d'approbation agent";
             }
 
@@ -214,7 +215,6 @@ public class SwiftValidationService {
 
         log.info("Validation terminée : {} transactions traitées", pendingMessages.size());
     }
-
     public String getRejectionReason(SwiftMessage message) {
         AppSettings settings = settingsService.getRawSettings();
 

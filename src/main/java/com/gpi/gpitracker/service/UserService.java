@@ -42,24 +42,79 @@ public class UserService {
         return userRepository.findByEmail(email);
     }
 
+    // Recherche par IBAN
+    public Optional<AppUser> getUserByIban(String iban) {
+        if (iban == null || iban.isBlank()) return Optional.empty();
+        return userRepository.findByIban(iban);
+    }
+
+    /**
+     * Génère un mot de passe temporaire sécurisé
+     */
+    private String generateTemporaryPassword() {
+        String uppercase = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+        String lowercase = "abcdefghijkmnpqrstuvwxyz";
+        String numbers = "23456789";
+        String special = "!@#$%&*";
+        String allChars = uppercase + lowercase + numbers + special;
+
+        StringBuilder password = new StringBuilder();
+        Random random = new Random();
+
+        // Au moins 1 caractère de chaque catégorie
+        password.append(uppercase.charAt(random.nextInt(uppercase.length())));
+        password.append(lowercase.charAt(random.nextInt(lowercase.length())));
+        password.append(numbers.charAt(random.nextInt(numbers.length())));
+        password.append(special.charAt(random.nextInt(special.length())));
+
+        // Compléter jusqu'à 12 caractères
+        for (int i = password.length(); i < 12; i++) {
+            password.append(allChars.charAt(random.nextInt(allChars.length())));
+        }
+
+        // Mélanger le mot de passe
+        char[] chars = password.toString().toCharArray();
+        for (int i = chars.length - 1; i > 0; i--) {
+            int j = random.nextInt(i + 1);
+            char temp = chars[i];
+            chars[i] = chars[j];
+            chars[j] = temp;
+        }
+
+        return new String(chars);
+    }
+
     @Transactional
     public AppUser createUser(UserCreateRequest request) {
+        // Vérifications existantes
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
-            throw new RuntimeException(
-                    "Email déjà utilisé : " + request.getEmail()
-            );
+            throw new RuntimeException("Email déjà utilisé : " + request.getEmail());
         }
 
         if (userRepository.findByUsername(request.getUsername()).isPresent()) {
-            throw new RuntimeException(
-                    "Nom d'utilisateur déjà utilisé : " + request.getUsername()
-            );
+            throw new RuntimeException("Nom d'utilisateur déjà utilisé : " + request.getUsername());
         }
 
+        // Vérifier si l'IBAN existe déjà (pour les clients)
+        if (request.getIban() != null && !request.getIban().isBlank()) {
+            if (userRepository.findByIban(request.getIban()).isPresent()) {
+                throw new RuntimeException("IBAN déjà utilisé par un autre client");
+            }
+        }
+
+        // ✅ GÉNÉRER UN MOT DE PASSE TEMPORAIRE AUTOMATIQUEMENT
+        String temporaryPassword = generateTemporaryPassword();
+        System.out.println("=== Mot de passe temporaire généré pour: " + request.getEmail());
+        System.out.println("=== Mot de passe: " + temporaryPassword);
+
+        // ✅ Utiliser le mot de passe généré pour Keycloak (IGNORER celui du frontend)
         String keycloakId = keycloakAdminService.createUser(
-                request.getUsername(), request.getEmail(),
-                request.getFirstName(), request.getLastName(),
-                request.getPassword(), request.getRole()
+                request.getUsername(),
+                request.getEmail(),
+                request.getFirstName(),
+                request.getLastName(),
+                temporaryPassword,  // ← Utiliser le mot de passe généré
+                request.getRole()
         );
 
         System.out.println("=== KEYCLOAK OK, keycloakId: " + keycloakId);
@@ -78,6 +133,7 @@ public class UserService {
         user.setCity(request.getCity());
         user.setPostalCode(request.getPostalCode());
         user.setCountry(request.getCountry());
+        user.setIban(request.getIban());
 
         System.out.println("=== AVANT SAVE: " + user.getUsername());
 
@@ -92,12 +148,19 @@ public class UserService {
             throw new RuntimeException("Erreur base de données: " + e.getMessage());
         }
 
+        // ✅ Envoyer l'email avec le mot de passe GÉNÉRÉ (pas celui du frontend)
         try {
+            String firstName = (request.getFirstName() != null && !request.getFirstName().isBlank())
+                    ? request.getFirstName()
+                    : request.getUsername();
+
             emailService.sendWelcomeEmail(
-                    request.getEmail(), request.getFirstName(),
-                    request.getUsername(), request.getPassword()
+                    request.getEmail(),
+                    firstName,
+                    request.getUsername(),
+                    temporaryPassword  // ← Utiliser le mot de passe généré
             );
-            System.out.println("=== EMAIL OK");
+            System.out.println("=== EMAIL OK avec mot de passe généré");
         } catch (Exception e) {
             System.err.println("=== ERREUR EMAIL (non bloquant): " + e.getMessage());
         }
@@ -114,9 +177,7 @@ public class UserService {
     @Transactional
     public AppUser updateUser(String id, AppUser userDetails) {
         AppUser user = userRepository.findById(id)
-                .orElseThrow(() ->
-                        new RuntimeException("Utilisateur non trouvé : " + id)
-                );
+                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé : " + id));
 
         user.setUsername(userDetails.getUsername());
         user.setEmail(userDetails.getEmail());
@@ -131,8 +192,14 @@ public class UserService {
         if (userDetails.getPostalCode() != null) user.setPostalCode(userDetails.getPostalCode());
         if (userDetails.getCountry() != null) user.setCountry(userDetails.getCountry());
 
+        // ⚠️ NE PAS MODIFIER L'IBAN EN MODIFICATION (sécurité)
+        // L'IBAN ne peut être modifié que si c'est explicitement autorisé
+        // Pour plus de sécurité, on ignore l'IBAN dans updateUser
+
+        // Mise à jour du statut
         if (userDetails.getActif() != null) user.setActif(userDetails.getActif());
 
+        // Mise à jour dans Keycloak (sans changer le mot de passe)
         keycloakAdminService.updateUser(
                 user.getKeycloakId(),
                 userDetails.getUsername(),
@@ -154,9 +221,7 @@ public class UserService {
     @Transactional
     public AppUser toggleUserStatus(String id) {
         AppUser user = userRepository.findById(id)
-                .orElseThrow(() ->
-                        new RuntimeException("Utilisateur non trouvé : " + id)
-                );
+                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé : " + id));
         int newStatus = user.getActif() == 1 ? 0 : 1;
         user.setActif(newStatus);
         keycloakAdminService.updateUserStatus(
@@ -177,9 +242,7 @@ public class UserService {
     @Transactional
     public void deleteUser(String id) {
         AppUser user = userRepository.findById(id)
-                .orElseThrow(() ->
-                        new RuntimeException("Utilisateur non trouvé : " + id)
-                );
+                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé : " + id));
 
         activityLogService.log(
                 "DELETE", "USER", id,
@@ -197,64 +260,30 @@ public class UserService {
 
         DashboardStats stats = new DashboardStats();
         stats.setTotalUsers(allUsers.size());
-        stats.setActiveUsers(
-                allUsers.stream().filter(u -> u.getActif() == 1).count()
-        );
-        stats.setInactiveUsers(
-                allUsers.stream().filter(u -> u.getActif() == 0).count()
-        );
-        stats.setAddedThisMonth(
-                allUsers.stream()
-                        .filter(u -> u.getDateCreation() != null &&
-                                u.getDateCreation().isAfter(firstDayOfMonth))
-                        .count()
-        );
-        stats.setByRole(
-                allUsers.stream().collect(
-                        Collectors.groupingBy(AppUser::getRole, Collectors.counting())
-                )
-        );
-        stats.setRecentUsers(
-                allUsers.stream()
-                        .filter(u -> u.getDateCreation() != null)
-                        .sorted((a, b) -> b.getDateCreation()
-                                .compareTo(a.getDateCreation()))
-                        .limit(5)
-                        .collect(Collectors.toList())
-        );
+        stats.setActiveUsers(allUsers.stream().filter(u -> u.getActif() == 1).count());
+        stats.setInactiveUsers(allUsers.stream().filter(u -> u.getActif() == 0).count());
+        stats.setAddedThisMonth(allUsers.stream()
+                .filter(u -> u.getDateCreation() != null && u.getDateCreation().isAfter(firstDayOfMonth))
+                .count());
+        stats.setByRole(allUsers.stream().collect(Collectors.groupingBy(AppUser::getRole, Collectors.counting())));
+        stats.setRecentUsers(allUsers.stream()
+                .filter(u -> u.getDateCreation() != null)
+                .sorted((a, b) -> b.getDateCreation().compareTo(a.getDateCreation()))
+                .limit(5)
+                .collect(Collectors.toList()));
 
         Map<String, Long> registrationsByMonth = new LinkedHashMap<>();
         for (int i = 5; i >= 0; i--) {
-            LocalDateTime monthStart = LocalDateTime.now()
-                    .minusMonths(i).withDayOfMonth(1)
-                    .withHour(0).withMinute(0).withSecond(0);
+            LocalDateTime monthStart = LocalDateTime.now().minusMonths(i).withDayOfMonth(1).withHour(0).withMinute(0).withSecond(0);
             LocalDateTime monthEnd = monthStart.plusMonths(1);
-            String monthLabel = monthStart.getMonth()
-                    .getDisplayName(TextStyle.SHORT, Locale.FRENCH);
+            String monthLabel = monthStart.getMonth().getDisplayName(TextStyle.SHORT, Locale.FRENCH);
             long count = allUsers.stream()
-                    .filter(u -> u.getDateCreation() != null
-                            && u.getDateCreation().isAfter(monthStart)
-                            && u.getDateCreation().isBefore(monthEnd))
+                    .filter(u -> u.getDateCreation() != null && u.getDateCreation().isAfter(monthStart) && u.getDateCreation().isBefore(monthEnd))
                     .count();
             registrationsByMonth.put(monthLabel, count);
         }
         stats.setRegistrationsByMonth(registrationsByMonth);
 
         return stats;
-    }
-
-
-
-    /**
-     * Générer un mot de passe temporaire sécurisé
-     */
-    private String generateTemporaryPassword() {
-        String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%";
-        StringBuilder password = new StringBuilder();
-        Random random = new Random();
-        for (int i = 0; i < 12; i++) {
-            password.append(chars.charAt(random.nextInt(chars.length())));
-        }
-        return password.toString();
     }
 }

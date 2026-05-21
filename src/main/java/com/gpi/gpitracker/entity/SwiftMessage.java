@@ -13,6 +13,20 @@ import java.time.LocalDateTime;
 @Table(name = "SWIFT_MESSAGE")
 public class SwiftMessage {
 
+    // ==================== CONSTANTES DE STATUT ====================
+    public static final String STATUS_PENDING = "EN_ATTENTE";
+    public static final String STATUS_ACCEPTED = "ACCEPTE";
+    public static final String STATUS_REJECTED = "REJETE";
+
+    // ==================== CONSTANTES D'ALERTE ====================
+    public static final String ALERTE_OK = "OK";
+    public static final String ALERTE_ATTENTION = "ATTENTION";
+    public static final String ALERTE_GRAVE = "GRAVE";
+
+    // ==================== CONSTANTES DE DIRECTION ====================
+    public static final String DIRECTION_IN = "IN";
+    public static final String DIRECTION_OUT = "OUT";
+
     @Id
     @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "swift_msg_seq")
     @SequenceGenerator(name = "swift_msg_seq", sequenceName = "SWIFT_MSG_SEQ", allocationSize = 1)
@@ -49,7 +63,7 @@ public class SwiftMessage {
     private String endToEndId;
 
     @Column(name = "DIRECTION", length = 3)
-    private String direction;  // "IN" pour reçu, "OUT" pour émis
+    private String direction;
 
     @Column(name = "TRANSACTION_ID", length = 35)
     private String transactionId;
@@ -108,20 +122,19 @@ public class SwiftMessage {
     private String fileName;
 
     /**
-     * Statut de la transaction selon les codes SWIFT ISO 20022.
-     * Valeurs possibles :
-     * - PDNG (Pending) : En attente de traitement
-     * - ACTC (Accepted Technical Validation) : Accepté techniquement
-     * - ACCP (Accepted) : Accepté par la banque
-     * - ACSP (Accepted Settlement In Process) : En cours de règlement
-     * - RJCT (Rejected) : Rejeté
+     * Statut de la transaction (simplifié)
+     * - EN_ATTENTE : En attente de validation par l'agent
+     * - ACCEPTE : Acceptée par l'agent
+     * - REJETE : Rejetée par l'agent
      */
     @Column(name = "STATUS", length = 30)
     private String status;
 
     /**
-     * Niveau d'alerte calculé par les règles métier.
-     * Valeurs possibles : "OK", "ATTENTION", "GRAVE"
+     * Niveau d'alerte calculé par les règles métier
+     * - OK : Aucune alerte
+     * - ATTENTION : À surveiller
+     * - GRAVE : Critique
      */
     @Column(name = "ALERTE", length = 20)
     private String alerte;
@@ -139,16 +152,10 @@ public class SwiftMessage {
     private LocalDateTime archivedAt;
 
     /**
-     * Motif de rejet
+     * Motif de rejet (renseigné quand status = REJETE)
      */
     @Column(name = "REJECTION_REASON", length = 500)
     private String rejectionReason;
-
-    /**
-     * Indique si la transaction nécessite une approbation manuelle
-     */
-    @Column(name = "NEEDS_AGENT_APPROVAL")
-    private Boolean needsAgentApproval = false;
 
     /**
      * Pour les messages de type PACS002 : référence vers le message original
@@ -157,66 +164,119 @@ public class SwiftMessage {
     private String originalMsgId;
 
     /**
-     * Statut du groupe (ACCP, RJCT, PDNG, ACTC, ACSP)
+     * Statut du groupe pour les réponses
      */
     @Column(name = "GROUP_STATUS", length = 10)
     private String groupStatus;
 
-    @Column(name = "TRANSACTION")
-    private Boolean transaction;
+    // ==================== CHAMPS POUR LE CLIENT ====================
 
-    // ===== CHAMPS AJOUTÉS POUR LE CLIENT =====
-
+    /**
+     * Email du client associé à la transaction
+     */
     @Column(name = "CLIENT_EMAIL", length = 100)
     private String clientEmail;
 
+    /**
+     * Date de validation par l'agent
+     */
     @Column(name = "VALIDATED_AT")
     private LocalDateTime validatedAt;
 
+    /**
+     * Nom de l'agent qui a validé
+     */
     @Column(name = "VALIDATED_BY", length = 100)
     private String validatedBy;
 
-    // ===== GETTERS ET SETTERS DES CHAMPS AJOUTÉS =====
+    /**
+     * Flag indiquant si l'agent a validé (accepté)
+     */
+    @Column(name = "AGENT_VALIDATED")
+    private Boolean agentValidated = false;
 
-    public String getClientEmail() {
-        return clientEmail;
+    // ==================== CHAMPS POUR L'ANNULATION ====================
+
+    /**
+     * Code raison d'annulation (CUST, DUPL, FRAD, etc.)
+     */
+    @Column(name = "CANCELLATION_REASON", length = 35)
+    private String cancellationReason;
+
+    /**
+     * Texte libre du motif d'annulation
+     */
+    @Column(name = "CANCELLATION_REASON_TEXT", length = 500)
+    private String cancellationReasonText;
+
+    /**
+     * Statut de l'annulation (PEND, ACCEPT, REJECT)
+     */
+    @Column(name = "CANCELLATION_STATUS", length = 10)
+    private String cancellationStatus;
+
+    /**
+     * UETR de la transaction originale (pour les réponses)
+     */
+    @Column(name = "ORIGINAL_UETR", length = 36)
+    private String originalUetr;
+
+    // ==================== MÉTHODES UTILITAIRES ====================
+
+    /**
+     * Vérifie si la transaction est en attente de validation agent
+     */
+    public boolean isPending() {
+        return STATUS_PENDING.equals(status) && !Boolean.TRUE.equals(agentValidated);
     }
 
-    public void setClientEmail(String clientEmail) {
-        this.clientEmail = clientEmail;
+    /**
+     * Vérifie si la transaction a été acceptée
+     */
+    public boolean isAccepted() {
+        return STATUS_ACCEPTED.equals(status);
     }
 
-    public LocalDateTime getValidatedAt() {
-        return validatedAt;
+    /**
+     * Vérifie si la transaction a été rejetée
+     */
+    public boolean isRejected() {
+        return STATUS_REJECTED.equals(status);
     }
 
-    public void setValidatedAt(LocalDateTime validatedAt) {
-        this.validatedAt = validatedAt;
+    /**
+     * Vérifie si la transaction a une alerte critique
+     */
+    public boolean isCriticalAlert() {
+        return ALERTE_GRAVE.equals(alerte);
     }
 
-    public String getValidatedBy() {
-        return validatedBy;
+    /**
+     * Vérifie si la transaction a une alerte d'attention
+     */
+    public boolean isWarningAlert() {
+        return ALERTE_ATTENTION.equals(alerte);
     }
 
-    public void setValidatedBy(String validatedBy) {
-        this.validatedBy = validatedBy;
+    /**
+     * Retourne le libellé du statut en français
+     */
+    public String getStatusLabel() {
+        if (isAccepted()) return "Acceptée";
+        if (isRejected()) return "Rejetée";
+        return "En attente";
     }
-
-    // ===== LOMBOK GENERATED (assurons-nous que les getters/setters existent) =====
-    // Les annotations @Getter et @Setter de Lombok génèrent automatiquement
-    // les getters et setters pour tous les champs, y compris les nouveaux.
-    // Pas besoin de les écrire manuellement si Lombok fonctionne.
 
     @PrePersist
     protected void onCreate() {
         if (receivedAt == null) {
             receivedAt = LocalDateTime.now();
         }
-        if (needsAgentApproval == null) {
-            needsAgentApproval = false;
-        }
         if (status == null) {
-            status = "PDNG";
+            status = STATUS_PENDING;
+        }
+        if (agentValidated == null) {
+            agentValidated = false;
         }
     }
 }

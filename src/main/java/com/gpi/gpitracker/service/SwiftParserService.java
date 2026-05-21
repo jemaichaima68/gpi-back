@@ -1,7 +1,9 @@
 package com.gpi.gpitracker.service;
 
+import com.gpi.gpitracker.entity.AppUser;
 import com.gpi.gpitracker.entity.BankDirectory;
 import com.gpi.gpitracker.entity.SwiftMessage;
+import com.gpi.gpitracker.repository.AppUserRepository;
 import com.gpi.gpitracker.repository.BankDirectoryRepository;
 import com.gpi.gpitracker.repository.SwiftMessageRepository;
 import lombok.RequiredArgsConstructor;
@@ -9,15 +11,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
 
-import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.File;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Optional;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -25,21 +26,26 @@ import java.util.Optional;
 public class SwiftParserService {
 
     private final SwiftMessageRepository swiftMessageRepository;
-    private final BankDirectoryRepository bankDirectoryRepository;
-    private final KeycloakAdminService keycloakAdminService;
+    private final CamtParserService camtParserService;
     private final EmailService emailService;
     private final NotificationService notificationService;
+    private final AppUserRepository appUserRepository;
+    private final KeycloakAdminService keycloakAdminService;
+    private final BankDirectoryRepository bankDirectoryRepository;
+    private final XmlValidationService xmlValidationService;
 
     public SwiftMessage parse(File xmlFile) {
-        String messageType = detectMessageType(xmlFile);
-        log.info("Type détecté : {} pour le fichier {}", messageType, xmlFile.getName());
+        String type = detectMessageType(xmlFile);
+        log.info("Type détecté : {} pour {}", type, xmlFile.getName());
 
-        return switch (messageType) {
+        return switch (type) {
             case "PACS008" -> parsePacs008(xmlFile);
             case "PACS009" -> parsePacs009(xmlFile);
             case "PACS002" -> parsePacs002(xmlFile);
+            case "CAMT056" -> camtParserService.parseCamt056(xmlFile);
+            case "CAMT029" -> camtParserService.parseCamt029(xmlFile);
             default -> {
-                log.warn("Type de message non supporté : {}", messageType);
+                log.warn("Type non supporté : {}", type);
                 yield null;
             }
         };
@@ -47,427 +53,524 @@ public class SwiftParserService {
 
     private String detectMessageType(File xmlFile) {
         String name = xmlFile.getName().toLowerCase();
-        if (name.contains("pacs.008") || name.contains("pacs008")) return "PACS008";
-        if (name.contains("pacs.009") || name.contains("pacs009")) return "PACS009";
-        if (name.contains("pacs.002") || name.contains("pacs002")) return "PACS002";
-        return detectFromXmlRoot(xmlFile);
+
+        if (name.contains("pacs.008") || name.contains("pacs008") || name.contains("008")) return "PACS008";
+        if (name.contains("pacs.009") || name.contains("pacs009") || name.contains("009")) return "PACS009";
+        if (name.contains("pacs.002") || name.contains("pacs002") || name.contains("002")) return "PACS002";
+        if (name.contains("camt.056") || name.contains("camt056") || name.contains("056")) return "CAMT056";
+        if (name.contains("camt.029") || name.contains("camt029") || name.contains("029")) return "CAMT029";
+
+        return detectFromXml(xmlFile);
     }
 
-    private String detectFromXmlRoot(File xmlFile) {
+    private String detectFromXml(File xmlFile) {
         try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setNamespaceAware(false);
-            Document doc = factory.newDocumentBuilder().parse(xmlFile);
-            String rootName = doc.getDocumentElement().getTagName();
-            if (rootName.contains("pacs.008")) return "PACS008";
-            if (rootName.contains("pacs.009")) return "PACS009";
-            if (rootName.contains("pacs.002")) return "PACS002";
+            Document doc = parseXml(xmlFile);
+            String namespace = doc.getDocumentElement().getNamespaceURI();
+            String content = namespace != null ? namespace : doc.getDocumentElement().getTextContent();
+
+            if (content.contains("pacs.008")) return "PACS008";
+            if (content.contains("pacs.009")) return "PACS009";
+            if (content.contains("pacs.002")) return "PACS002";
+            if (content.contains("camt.056")) return "CAMT056";
+            if (content.contains("camt.029")) return "CAMT029";
         } catch (Exception e) {
-            log.error("Impossible de lire la racine XML de {} : {}", xmlFile.getName(), e.getMessage());
+            log.error("Détection XML impossible : {}", e.getMessage());
         }
         return "UNKNOWN";
+    }
+
+    // ==================== MÉTHODES DE NETTOYAGE POUR XSD ====================
+
+    /**
+     * Nettoie une chaîne pour la rendre compatible avec les XSD PACS (Max35Text)
+     * Caractères autorisés : a-z A-Z 0-9 / - ? : ( ) . , ' + espace
+     */
+    private String sanitizeForXsd(String value) {
+        if (value == null || value.isBlank()) {
+            return "UNKNOWN-" + System.currentTimeMillis();
+        }
+
+        String cleaned = value
+                .replace("_", "-")           // underscore → trait d'union
+                .replace(" ", "-")            // espace → trait d'union
+                .replaceAll("[^a-zA-Z0-9/\\-?:\\(\\)\\.,'\\+]", "-");
+
+        // Limiter à 35 caractères (Max35Text)
+        if (cleaned.length() > 35) {
+            cleaned = cleaned.substring(0, 35);
+        }
+
+        if (!cleaned.equals(value)) {
+            log.debug("ID nettoyé: '{}' → '{}'", value, cleaned);
+        }
+
+        return cleaned;
+    }
+
+    /**
+     * Valide et nettoie un UETR (UUID v4)
+     */
+    private String sanitizeUetr(String uetr) {
+        if (uetr == null || uetr.isBlank()) {
+            log.warn("UETR manquant, génération d'un nouveau UUID");
+            return UUID.randomUUID().toString();
+        }
+
+        // Pattern UUID v4
+        String uuidPattern = "[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}";
+        if (!uetr.toLowerCase().matches(uuidPattern)) {
+            log.warn("UETR invalide: '{}', génération d'un nouveau UUID", uetr);
+            return UUID.randomUUID().toString();
+        }
+
+        return uetr.toLowerCase();
     }
 
     // ==================== PARSING PACS008 ====================
 
     private SwiftMessage parsePacs008(File xmlFile) {
-        try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setNamespaceAware(false);
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            Document doc = builder.parse(xmlFile);
-            doc.getDocumentElement().normalize();
+        SwiftMessage message = parseCommonPayment(xmlFile, "PACS008");
 
-            SwiftMessage message = new SwiftMessage();
-            message.setMessageType("PACS008");
-            message.setFileName(xmlFile.getName());
-            message.setStatus("EN_ATTENTE");
-            message.setReceivedAt(LocalDateTime.now());
-
-            // 1. GROUP HEADER
-            Element grpHdr = getFirstElement(doc, "GrpHdr");
-            if (grpHdr != null) {
-                message.setMsgId(getChildText(grpHdr, "MsgId"));
-                String creDtTm = getChildText(grpHdr, "CreDtTm");
-                if (creDtTm != null && !creDtTm.isEmpty()) {
-                    try {
-                        message.setCreationDateTime(LocalDateTime.parse(creDtTm, DateTimeFormatter.ISO_DATE_TIME));
-                    } catch (Exception e) {
-                        log.warn("Erreur parsing date: {}", creDtTm);
-                    }
-                }
-            }
-
-            // 2. TRANSACTION INFO
-            Element cdtTrf = getFirstElement(doc, "CdtTrfTxInf");
-            if (cdtTrf != null) {
-
-                Element pmtId = getFirstChildElement(cdtTrf, "PmtId");
-                if (pmtId != null) {
-                    String uetr = getChildText(pmtId, "UETR");
-                    if (uetr != null && !uetr.isBlank()) {
-                        message.setUetr(uetr);
-                        log.info("UETR extrait du XML: {}", uetr);
-                    }
-                    message.setEndToEndId(getChildText(pmtId, "EndToEndId"));
-                    message.setInstructionId(getChildText(pmtId, "InstrId"));
-                }
-
-                NodeList amtNodes = doc.getElementsByTagName("InstdAmt");
-                if (amtNodes.getLength() > 0) {
-                    Element amtEl = (Element) amtNodes.item(0);
-                    String amtText = amtEl.getTextContent().trim();
-                    if (!amtText.isEmpty()) {
-                        message.setAmount(new BigDecimal(amtText));
-                    }
-                    message.setCurrency(amtEl.getAttribute("Ccy"));
-                }
-
-                String chargeBearer = getChildText(cdtTrf, "ChrgBr");
-                if (chargeBearer != null) message.setChargeBearer(chargeBearer);
-
-                Element dbtr = getFirstChildElement(cdtTrf, "Dbtr");
-                String debtorName = null;
-                if (dbtr != null) {
-                    debtorName = getChildText(dbtr, "Nm");
-                    message.setDebtorName(debtorName);
-                    log.info("Nom du débiteur extrait: {}", debtorName);
-
-                    Element dbtrAdr = getFirstChildElement(dbtr, "PstlAdr");
-                    if (dbtrAdr != null) {
-                        message.setDebtorCountry(getChildText(dbtrAdr, "Ctry"));
-                        String address = getChildText(dbtrAdr, "AdrLine");
-                        if (address != null) message.setDebtorAddress(address);
-                    }
-                }
-
-                Element dbtrAcct = getFirstChildElement(cdtTrf, "DbtrAcct");
-                if (dbtrAcct != null) {
-                    Element acctId = getFirstChildElement(dbtrAcct, "Id");
-                    if (acctId != null) {
-                        String iban = getChildText(acctId, "IBAN");
-                        if (iban != null) message.setDebtorIban(iban);
-                    }
-                }
-
-                Element dbtrAgt = getFirstChildElement(cdtTrf, "DbtrAgt");
-                if (dbtrAgt != null) {
-                    Element finInstnId = getFirstChildElement(dbtrAgt, "FinInstnId");
-                    if (finInstnId != null) {
-                        message.setDebtorAgentBic(getChildText(finInstnId, "BICFI"));
-                    }
-                }
-
-                Element cdtr = getFirstChildElement(cdtTrf, "Cdtr");
-                if (cdtr != null) {
-                    message.setCreditorName(getChildText(cdtr, "Nm"));
-                    Element cdtrAdr = getFirstChildElement(cdtr, "PstlAdr");
-                    if (cdtrAdr != null) {
-                        message.setCreditorCountry(getChildText(cdtrAdr, "Ctry"));
-                        String address = getChildText(cdtrAdr, "AdrLine");
-                        if (address != null) message.setCreditorAddress(address);
-                    }
-                }
-
-                Element cdtrAcct = getFirstChildElement(cdtTrf, "CdtrAcct");
-                if (cdtrAcct != null) {
-                    Element acctId = getFirstChildElement(cdtrAcct, "Id");
-                    if (acctId != null) {
-                        String iban = getChildText(acctId, "IBAN");
-                        if (iban != null) message.setCreditorIban(iban);
-                    }
-                }
-
-                Element cdtrAgt = getFirstChildElement(cdtTrf, "CdtrAgt");
-                if (cdtrAgt != null) {
-                    Element finInstnId = getFirstChildElement(cdtrAgt, "FinInstnId");
-                    if (finInstnId != null) {
-                        message.setCreditorAgentBic(getChildText(finInstnId, "BICFI"));
-                    }
-                }
-
-                Element rmtInf = getFirstChildElement(cdtTrf, "RmtInf");
-                if (rmtInf != null) {
-                    String ustrd = getChildText(rmtInf, "Ustrd");
-                    if (ustrd != null) message.setRemittanceInfo(ustrd);
-                }
-
-                // ✅ DÉTECTION AUTO DU CLIENT PAR SON NOM
-                autoDetectAndAssignClient(message, debtorName);
-            }
-
+        if (message != null) {
             autoRegisterBank(message.getDebtorAgentBic());
             autoRegisterBank(message.getCreditorAgentBic());
-
-            log.info("=== PACS008 PARSED ===");
-            log.info("MsgId: {}, UETR: {}, Montant: {} {}, ClientEmail: {}",
-                    message.getMsgId(), message.getUetr(), message.getAmount(),
-                    message.getCurrency(), message.getClientEmail());
-
-            return message;
-
-        } catch (Exception e) {
-            log.error("Erreur parsing pacs.008 [{}] : {}", xmlFile.getName(), e.getMessage(), e);
-            return null;
+            log.info("🏦 Banques PACS008 enregistrées: D={}, C={}",
+                    message.getDebtorAgentBic(), message.getCreditorAgentBic());
         }
-    }
 
-    // ✅ MÉTHODE PRINCIPALE : Détection auto du client + Email + Notification
-    private void autoDetectAndAssignClient(SwiftMessage message, String debtorName) {
-        try {
-            if (debtorName == null || debtorName.isBlank()) {
-                log.warn("⚠️ Aucun nom débiteur trouvé - impossible d'associer un client");
-                return;
-            }
-
-            log.info("🔍 Recherche automatique du client par nom: '{}'", debtorName);
-
-            // 1. Chercher l'email dans Keycloak par le nom
-            String clientEmail = keycloakAdminService.getEmailByFullName(debtorName);
-
-            if (clientEmail != null) {
-                // 2. Associer l'email à la transaction
-                message.setClientEmail(clientEmail);
-                log.info("✅ Client associé automatiquement: {} -> {}", debtorName, clientEmail);
-
-                // 3. Vérifier si la transaction existe déjà (éviter doublon)
-                boolean transactionExists = swiftMessageRepository.existsByUetr(message.getUetr());
-
-                if (!transactionExists) {
-                    // 4. Envoyer EMAIL de confirmation au client
-                    emailService.sendTransactionReceivedEmail(
-                            clientEmail,
-                            debtorName,
-                            message.getUetr(),
-                            message.getAmount(),
-                            message.getCurrency()
-                    );
-                    log.info("📧 Email de réception envoyé à {}", clientEmail);
-
-                    // 5. Envoyer NOTIFICATION dans l'interface client
-                    notificationService.createNotification(
-                            clientEmail,
-                            "💰 Nouvelle transaction reçue",
-                            "Votre transaction SWIFT d'un montant de " + message.getAmount() + " " + message.getCurrency() +
-                                    " (UETR: " + message.getUetr() + ") a été reçue et est en attente de validation.",
-                            "info",
-                            message.getUetr()
-                    );
-                    log.info("🔔 Notification envoyée à {}", clientEmail);
-                } else {
-                    log.warn("⚠️ Transaction déjà existante pour UETR: {}", message.getUetr());
-                }
-            } else {
-                log.warn("⚠️ Aucun client trouvé dans Keycloak pour le nom: '{}' - Transaction en attente d'affectation manuelle", debtorName);
-
-                // Option: notification à l'admin qu'une transaction est sans client
-                notificationService.createNotification(
-                        "admin@gpi.com",  // Email admin
-                        "⚠️ Transaction sans client",
-                        "Une transaction est arrivée mais le client '{}' n'existe pas dans Keycloak",
-                        "warning",
-                        message.getUetr()
-                );
-            }
-        } catch (Exception e) {
-            log.error("❌ Erreur lors de l'association automatique du client: {}", e.getMessage());
-        }
+        return message;
     }
 
     // ==================== PARSING PACS009 ====================
 
     private SwiftMessage parsePacs009(File xmlFile) {
+        SwiftMessage message = parseCommonPayment(xmlFile, "PACS009");
+
+        if (message == null) {
+            log.error("❌ Échec parsing PACS009");
+            return null;
+        }
+
+        log.info("📨 PACS009 reçu - UETR: {}", message.getUetr());
+        log.info("🔍 BIC émetteur (InstgAgt): {}", message.getInstructingAgentBic());
+        log.info("🔍 BIC récepteur (InstdAgt): {}", message.getInstructedAgentBic());
+
+        if (message.getInstructingAgentBic() != null && !message.getInstructingAgentBic().isBlank()) {
+            autoRegisterBank(message.getInstructingAgentBic());
+        }
+        if (message.getInstructedAgentBic() != null && !message.getInstructedAgentBic().isBlank()) {
+            autoRegisterBank(message.getInstructedAgentBic());
+        }
+
+        log.info("🏦 Banques PACS009 enregistrées avec succès");
+
+        return message;
+    }
+
+    // ==================== PARSING COMMUN PACS008/PACS009 ====================
+
+    private SwiftMessage parseCommonPayment(File xmlFile, String messageType) {
         try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setNamespaceAware(false);
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            Document doc = builder.parse(xmlFile);
-            doc.getDocumentElement().normalize();
+            Document doc = parseXml(xmlFile);
 
             SwiftMessage message = new SwiftMessage();
-            message.setMessageType("PACS009");
+            message.setMessageType(messageType);
             message.setFileName(xmlFile.getName());
             message.setStatus("EN_ATTENTE");
             message.setReceivedAt(LocalDateTime.now());
 
             Element grpHdr = getFirstElement(doc, "GrpHdr");
             if (grpHdr != null) {
-                message.setMsgId(getChildText(grpHdr, "MsgId"));
+                // ⭐ NETTOYAGE DU MSG_ID
+                String rawMsgId = getChildText(grpHdr, "MsgId");
+                message.setMsgId(sanitizeForXsd(rawMsgId));
+
+                String creDtTm = getChildText(grpHdr, "CreDtTm");
+                if (creDtTm != null && !creDtTm.isBlank()) {
+                    try {
+                        message.setCreationDateTime(LocalDateTime.parse(creDtTm, DateTimeFormatter.ISO_DATE_TIME));
+                    } catch (Exception ignored) {
+                        log.warn("Date non parsée : {}", creDtTm);
+                    }
+                }
             }
 
-            Element cdtTrfTxInf = getFirstElement(doc, "CdtTrfTxInf");
-            if (cdtTrfTxInf != null) {
-                Element pmtId = getFirstChildElement(cdtTrfTxInf, "PmtId");
+            Element txInf = getFirstElement(doc, "CdtTrfTxInf");
+            String debtorName = null;
+            String debtorIban = null;
+
+            if (txInf != null) {
+                Element pmtId = getFirstChildElement(txInf, "PmtId");
                 if (pmtId != null) {
-                    message.setEndToEndId(getChildText(pmtId, "EndToEndId"));
-                    message.setUetr(getChildText(pmtId, "UETR"));
+                    // ⭐ NETTOYAGE DES IDs
+                    String rawInstrId = getChildText(pmtId, "InstrId");
+                    String rawEndToEndId = getChildText(pmtId, "EndToEndId");
+                    String rawUetr = getChildText(pmtId, "UETR");
+
+                    message.setInstructionId(sanitizeForXsd(rawInstrId));
+                    message.setEndToEndId(sanitizeForXsd(rawEndToEndId));
+                    message.setUetr(sanitizeUetr(rawUetr));
                 }
 
-                Element amt = getFirstChildElement(cdtTrfTxInf, "Amt");
+                Element amt = getFirstElement(doc, "InstdAmt");
+                if (amt == null) amt = getFirstElement(doc, "IntrBkSttlmAmt");
                 if (amt != null) {
-                    Element instdAmt = getFirstChildElement(amt, "InstdAmt");
-                    if (instdAmt != null) {
-                        String amtText = instdAmt.getTextContent().trim();
-                        if (!amtText.isEmpty()) {
-                            message.setAmount(new BigDecimal(amtText));
-                        }
-                        message.setCurrency(instdAmt.getAttribute("Ccy"));
+                    message.setCurrency(amt.getAttribute("Ccy"));
+                    if (amt.getTextContent() != null && !amt.getTextContent().isBlank()) {
+                        message.setAmount(new BigDecimal(amt.getTextContent().trim()));
                     }
                 }
 
-                Element dbtr = getFirstChildElement(cdtTrfTxInf, "Dbtr");
-                String debtorName = null;
+                message.setChargeBearer(getChildText(txInf, "ChrgBr"));
+
+                Element dbtr = getFirstChildElement(txInf, "Dbtr");
                 if (dbtr != null) {
                     debtorName = getChildText(dbtr, "Nm");
                     message.setDebtorName(debtorName);
+
+                    Element dbtrPstlAdr = getFirstChildElement(dbtr, "PstlAdr");
+                    if (dbtrPstlAdr != null) {
+                        String debtorCountry = getChildText(dbtrPstlAdr, "Ctry");
+                        if (debtorCountry != null && !debtorCountry.isBlank()) {
+                            message.setDebtorCountry(debtorCountry);
+                            log.info("Pays débiteur extrait: {}", debtorCountry);
+                        }
+                    }
                 }
 
-                Element cdtr = getFirstChildElement(cdtTrfTxInf, "Cdtr");
+                Element cdtr = getFirstChildElement(txInf, "Cdtr");
                 if (cdtr != null) {
                     message.setCreditorName(getChildText(cdtr, "Nm"));
+
+                    Element cdtrPstlAdr = getFirstChildElement(cdtr, "PstlAdr");
+                    if (cdtrPstlAdr != null) {
+                        String creditorCountry = getChildText(cdtrPstlAdr, "Ctry");
+                        if (creditorCountry != null && !creditorCountry.isBlank()) {
+                            message.setCreditorCountry(creditorCountry);
+                            log.info("Pays créditeur extrait: {}", creditorCountry);
+                        }
+                    }
                 }
 
-                // ✅ Détection auto du client pour PACS009
-                autoDetectAndAssignClient(message, debtorName);
+                if ("PACS008".equals(messageType)) {
+                    debtorIban = extractIban(txInf, "DbtrAcct");
+                    message.setDebtorIban(debtorIban);
+                    message.setCreditorIban(extractIban(txInf, "CdtrAcct"));
+                }
+
+                message.setDebtorAgentBic(extractBic(txInf, "DbtrAgt"));
+                message.setCreditorAgentBic(extractBic(txInf, "CdtrAgt"));
+                message.setInstructingAgentBic(extractBic(txInf, "InstgAgt"));
+                message.setInstructedAgentBic(extractBic(txInf, "InstdAgt"));
+
+                Element rmtInf = getFirstChildElement(txInf, "RmtInf");
+                if (rmtInf != null) message.setRemittanceInfo(getChildText(rmtInf, "Ustrd"));
             }
 
-            autoRegisterBank(message.getInstructingAgentBic());
-            autoRegisterBank(message.getInstructedAgentBic());
+            // Fallback si MsgId est null après nettoyage
+            if (message.getMsgId() == null || message.getMsgId().isBlank()) {
+                message.setMsgId(messageType + "-" + System.currentTimeMillis());
+            }
 
-            log.info("=== PACS009 PARSED ===");
-            log.info("MsgId: {}, UETR: {}", message.getMsgId(), message.getUetr());
+            // Fallback si UETR est null après nettoyage
+            if (message.getUetr() == null || message.getUetr().isBlank()) {
+                message.setUetr(UUID.randomUUID().toString());
+            }
+
+            if ("PACS008".equals(messageType)) {
+                assignClientAndSendEmail(message, debtorName, debtorIban);
+            } else {
+                log.info("📨 PACS009 reçu (interbancaire) - Pas d'association client");
+            }
+
+            log.info("Transaction parsée: UETR={}, Type={}, ClientEmail={}",
+                    message.getUetr(), messageType, message.getClientEmail());
 
             return message;
 
         } catch (Exception e) {
-            log.error("Erreur parsing pacs.009: {}", e.getMessage(), e);
+            log.error("Erreur parsing {} : {}", messageType, e.getMessage(), e);
             return null;
+        }
+    }
+
+    private void autoRegisterBank(String bic) {
+        if (bic == null || bic.isBlank()) {
+            log.debug("BIC null ou vide, ignoré");
+            return;
+        }
+
+        String bicUpper = bic.toUpperCase().trim();
+        log.info("🏦 Enregistrement banque: {}", bicUpper);
+
+        try {
+            Optional<BankDirectory> existing = bankDirectoryRepository.findByBicIgnoreCase(bicUpper);
+
+            if (existing.isPresent()) {
+                BankDirectory bank = existing.get();
+                bank.setOccurrenceCount(bank.getOccurrenceCount() + 1);
+                bank.setLastSeenAt(LocalDateTime.now());
+                bankDirectoryRepository.save(bank);
+                log.info("✅ Banque existante, compteur incrémenté: {} -> {}", bicUpper, bank.getOccurrenceCount());
+            } else {
+                BankDirectory newBank = new BankDirectory();
+                newBank.setBic(bicUpper);
+                newBank.setBankName(bicUpper);
+                newBank.setCountryCode("??");
+                newBank.setFirstSeenAt(LocalDateTime.now());
+                newBank.setLastSeenAt(LocalDateTime.now());
+                newBank.setOccurrenceCount(1);
+                bankDirectoryRepository.save(newBank);
+                log.info("🏦 NOUVELLE BANQUE auto-enregistrée: {}", bicUpper);
+            }
+        } catch (Exception e) {
+            log.error("❌ Erreur auto-enregistrement banque {}: {}", bicUpper, e.getMessage());
+        }
+    }
+
+    // ==================== ASSIGNATION CLIENT ====================
+
+    private void assignClientAndSendEmail(SwiftMessage message, String debtorName, String debtorIban) {
+        try {
+            String clientEmail = null;
+
+            log.info("Recherche client pour: '{}' (IBAN: {})", debtorName, debtorIban);
+
+            if (debtorIban != null && !debtorIban.isBlank()) {
+                Optional<AppUser> userByIban = appUserRepository.findByIban(debtorIban);
+                if (userByIban.isPresent()) {
+                    clientEmail = userByIban.get().getEmail();
+                    log.info("Client trouvé par IBAN: {} -> {}", debtorIban, clientEmail);
+                }
+            }
+
+            if (clientEmail == null && debtorName != null && debtorName.contains("@")) {
+                clientEmail = debtorName;
+                log.info("Email extrait directement du debtorName: {}", clientEmail);
+            }
+
+            if (clientEmail == null && debtorName != null && !debtorName.isBlank()) {
+                clientEmail = keycloakAdminService.getEmailByFullName(debtorName);
+                if (clientEmail != null) {
+                    log.info("Client trouvé par NOM: {} -> {}", debtorName, clientEmail);
+                }
+            }
+
+            if (clientEmail != null) {
+                message.setClientEmail(clientEmail);
+                log.info("Client associé: {} -> {}", debtorName, clientEmail);
+
+                boolean transactionExists = swiftMessageRepository.existsByUetr(message.getUetr());
+
+                if (!transactionExists) {
+                    emailService.sendTransactionReceivedEmailSync(
+                            clientEmail,
+                            debtorName != null ? debtorName : "Client",
+                            message.getUetr(),
+                            message.getAmount(),
+                            message.getCurrency()
+                    );
+                    log.info("Email de reception envoyé à {} avec UETR: {}", clientEmail, message.getUetr());
+
+                    notificationService.createNotification(
+                            clientEmail,
+                            "Nouvelle transaction reçue",
+                            "Votre transaction SWIFT d'un montant de " + message.getAmount() + " " + message.getCurrency() +
+                                    " (UETR: " + message.getUetr() + ") a été reçue et est en attente de validation.",
+                            "info",
+                            message.getUetr()
+                    );
+                    log.info("Notification envoyée à {}", clientEmail);
+                } else {
+                    log.warn("Transaction déjà existante pour UETR: {}, email non envoyé", message.getUetr());
+                }
+            } else {
+                log.warn("Transaction non associée - IBAN: {}, Nom: {}", debtorIban, debtorName);
+            }
+        } catch (Exception e) {
+            log.error("Erreur lors de l'association client: {}", e.getMessage(), e);
         }
     }
 
     // ==================== PARSING PACS002 ====================
 
     private SwiftMessage parsePacs002(File xmlFile) {
-        try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            factory.setNamespaceAware(true);
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            Document doc = builder.parse(xmlFile);
-            doc.getDocumentElement().normalize();
+        if (!xmlValidationService.validateXmlFile(xmlFile, XmlValidationService.TYPE_PACS002)) {
+            log.error("PACS.002 invalide selon XSD : {}", xmlFile.getName());
+            return null;
+        }
 
-            SwiftMessage received = new SwiftMessage();
-            received.setMessageType("PACS002");
-            received.setFileName(xmlFile.getName());
-            received.setStatus("RECEIVED");
-            received.setReceivedAt(LocalDateTime.now());
+        try {
+            Document doc = parseXml(xmlFile);
+
+            SwiftMessage message = new SwiftMessage();
+            message.setMessageType("PACS002");
+            message.setFileName(xmlFile.getName());
+            message.setDirection("IN");
+            message.setReceivedAt(LocalDateTime.now());
+            message.setStatus("RECEIVED");
 
             Element grpHdr = getFirstElement(doc, "GrpHdr");
             if (grpHdr != null) {
-                received.setMsgId(getChildText(grpHdr, "MsgId"));
+                message.setMsgId(getChildText(grpHdr, "MsgId"));
             }
 
-            Element orgnlGrp = getFirstElement(doc, "OrgnlGrpInfAndSts");
-            if (orgnlGrp != null) {
-                String originalMsgId = getChildText(orgnlGrp, "OrgnlMsgId");
-                String groupStatus = getChildText(orgnlGrp, "GrpSts");
-                received.setOriginalMsgId(originalMsgId);
-                received.setGroupStatus(groupStatus);
+            Element txInfAndSts = getFirstElement(doc, "TxInfAndSts");
+            if (txInfAndSts != null) {
+                Element orgnlGrpInf = getFirstChildElement(txInfAndSts, "OrgnlGrpInf");
+                if (orgnlGrpInf != null) {
+                    message.setOriginalMsgId(getChildText(orgnlGrpInf, "OrgnlMsgId"));
+                }
 
-                Optional<SwiftMessage> optOriginal = swiftMessageRepository.findFirstByMsgIdOrderByReceivedAtDesc(originalMsgId);
-                if (optOriginal.isPresent()) {
-                    SwiftMessage original = optOriginal.get();
-                    String oldStatus = original.getStatus();
-                    String newStatus = mapGroupStatus(groupStatus);
-                    original.setStatus(newStatus);
-                    swiftMessageRepository.save(original);
+                message.setOriginalUetr(getChildText(txInfAndSts, "OrgnlUETR"));
+                message.setUetr(message.getOriginalUetr());
+                message.setEndToEndId(getChildText(txInfAndSts, "OrgnlEndToEndId"));
 
-                    log.info("Transaction {} mise à jour : {} → {}", originalMsgId, oldStatus, newStatus);
+                String txSts = getChildText(txInfAndSts, "TxSts");
+                if (txSts != null) {
+                    message.setGroupStatus(txSts);
+                    message.setStatus(mapPacs002Status(txSts));
+                }
 
-                    // ✅ Notifier le client du changement de statut
-                    if (original.getClientEmail() != null && !original.getClientEmail().isBlank()) {
-                        String notificationStatus = mapGroupStatusToNotification(groupStatus);
-                        notificationService.notifyStatusChange(
-                                original.getClientEmail(),
-                                original.getDebtorName(),
-                                original.getUetr(),
-                                notificationStatus,
-                                null
-                        );
-                        log.info("🔔 Notification de changement de statut envoyée à {}", original.getClientEmail());
+                Element stsRsnInf = getFirstChildElement(txInfAndSts, "StsRsnInf");
+                if (stsRsnInf != null) {
+                    Element rsn = getFirstChildElement(stsRsnInf, "Rsn");
+                    if (rsn != null) {
+                        String reasonCd = getChildText(rsn, "Cd");
+                        if (reasonCd != null) {
+                            message.setRejectionReason(reasonCd);
+                        }
+                    }
+                    String addtlInf = getChildText(stsRsnInf, "AddtlInf");
+                    if (addtlInf != null && message.getRejectionReason() == null) {
+                        message.setRejectionReason(addtlInf);
+                    }
+                }
+
+                Element instgAgt = getFirstChildElement(txInfAndSts, "InstgAgt");
+                if (instgAgt != null) {
+                    Element finInstnId = getFirstChildElement(instgAgt, "FinInstnId");
+                    if (finInstnId != null) {
+                        message.setInstructingAgentBic(getChildText(finInstnId, "BICFI"));
+                    }
+                }
+
+                Element instdAgt = getFirstChildElement(txInfAndSts, "InstdAgt");
+                if (instdAgt != null) {
+                    Element finInstnId = getFirstChildElement(instdAgt, "FinInstnId");
+                    if (finInstnId != null) {
+                        message.setInstructedAgentBic(getChildText(finInstnId, "BICFI"));
                     }
                 }
             }
 
-            return received;
+            if (message.getMsgId() == null || message.getMsgId().isBlank()) {
+                message.setMsgId("PACS002-" + System.currentTimeMillis());
+            }
+
+            updateOriginalFromPacs002(message);
+
+            return message;
 
         } catch (Exception e) {
-            log.error("Erreur parsing pacs.002: {}", e.getMessage(), e);
+            log.error("Erreur parsing PACS002 : {}", e.getMessage(), e);
             return null;
         }
     }
 
-    private String mapGroupStatus(String groupStatus) {
-        return switch (groupStatus) {
-            case "ACCP", "ACSC" -> "ACCEPTE";
+    private void updateOriginalFromPacs002(SwiftMessage pacs002) {
+        String status = pacs002.getGroupStatus();
+        if (status == null) return;
+
+        SwiftMessage original = null;
+
+        if (pacs002.getOriginalUetr() != null) {
+            original = swiftMessageRepository.findByUetr(pacs002.getOriginalUetr()).orElse(null);
+        }
+
+        if (original == null && pacs002.getOriginalMsgId() != null) {
+            original = swiftMessageRepository.findByMsgId(pacs002.getOriginalMsgId()).orElse(null);
+        }
+
+        if (original != null) {
+            original.setStatus(mapPacs002Status(status));
+            if ("RJCT".equals(status)) {
+                original.setRejectionReason(pacs002.getRejectionReason());
+            }
+            swiftMessageRepository.save(original);
+
+            if (original.getClientEmail() != null && !original.getClientEmail().isBlank()) {
+                if ("ACCEPTE".equals(original.getStatus())) {
+                    notificationService.createNotification(
+                            original.getClientEmail(),
+                            "Transaction acceptee",
+                            "Votre transaction a ete acceptee.",
+                            "success",
+                            original.getUetr()
+                    );
+                } else if ("REJETE".equals(original.getStatus())) {
+                    notificationService.createNotification(
+                            original.getClientEmail(),
+                            "Transaction rejetee",
+                            "Votre transaction a ete rejetee.",
+                            "error",
+                            original.getUetr()
+                    );
+                }
+            }
+        }
+    }
+
+    private String mapPacs002Status(String isoStatus) {
+        return switch (isoStatus) {
+            case "ACCP" -> "ACCEPTE";
             case "RJCT" -> "REJETE";
             case "PDNG" -> "EN_ATTENTE";
             default -> "EN_ATTENTE";
         };
     }
 
-    private String mapGroupStatusToNotification(String groupStatus) {
-        return switch (groupStatus) {
-            case "ACCP", "ACSC" -> "ACSC";
-            case "ACTC" -> "ACTC";
-            case "ACSP" -> "ACSP";
-            case "RJCT" -> "RJCT";
-            default -> "PDNG";
-        };
-    }
-
     // ==================== MÉTHODES UTILITAIRES ====================
 
+    private String extractIban(Element txInf, String accountTag) {
+        Element acct = getFirstChildElement(txInf, accountTag);
+        if (acct == null) return null;
+        Element id = getFirstChildElement(acct, "Id");
+        return id != null ? getChildText(id, "IBAN") : null;
+    }
+
+    private String extractBic(Element txInf, String agentTag) {
+        Element agent = getFirstChildElement(txInf, agentTag);
+        if (agent == null) return null;
+        Element fin = getFirstChildElement(agent, "FinInstnId");
+        return fin != null ? getChildText(fin, "BICFI") : null;
+    }
+
+    private Document parseXml(File xmlFile) throws Exception {
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(true);
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        Document doc = factory.newDocumentBuilder().parse(xmlFile);
+        doc.getDocumentElement().normalize();
+        return doc;
+    }
+
     private Element getFirstElement(Document doc, String tagName) {
-        NodeList list = doc.getElementsByTagName(tagName);
-        return list.getLength() > 0 ? (Element) list.item(0) : null;
+        var nodes = doc.getElementsByTagName(tagName);
+        return nodes.getLength() > 0 ? (Element) nodes.item(0) : null;
     }
 
     private Element getFirstChildElement(Element parent, String tagName) {
-        if (parent == null) return null;
-        NodeList list = parent.getElementsByTagName(tagName);
-        return list.getLength() > 0 ? (Element) list.item(0) : null;
+        var nodes = parent.getElementsByTagName(tagName);
+        return nodes.getLength() > 0 ? (Element) nodes.item(0) : null;
     }
 
     private String getChildText(Element parent, String tagName) {
         if (parent == null) return null;
-        NodeList list = parent.getElementsByTagName(tagName);
-        return list.getLength() > 0 ? list.item(0).getTextContent().trim() : null;
-    }
-
-    private void autoRegisterBank(String bic) {
-        if (bic == null || bic.isBlank()) return;
-
-        try {
-            Optional<BankDirectory> existing = bankDirectoryRepository.findByBicIgnoreCase(bic);
-            if (existing.isPresent()) {
-                BankDirectory bank = existing.get();
-                bank.setOccurrenceCount(bank.getOccurrenceCount() + 1);
-                bank.setLastSeenAt(LocalDateTime.now());
-                bankDirectoryRepository.save(bank);
-                log.debug("Banque déjà existante, compteur incrémenté: {}", bic);
-            } else {
-                BankDirectory newBank = new BankDirectory();
-                newBank.setBic(bic.toUpperCase());
-                newBank.setBankName(bic.toUpperCase());
-                newBank.setCountryCode("??");
-                newBank.setFirstSeenAt(LocalDateTime.now());
-                newBank.setLastSeenAt(LocalDateTime.now());
-                newBank.setOccurrenceCount(1);
-                bankDirectoryRepository.save(newBank);
-                log.info("📝 Nouvelle banque auto-enregistrée: {}", bic);
-            }
-        } catch (Exception e) {
-            log.error("Erreur auto-enregistrement banque {}: {}", bic, e.getMessage());
-        }
+        var nodes = parent.getElementsByTagName(tagName);
+        if (nodes.getLength() == 0) return null;
+        String text = nodes.item(0).getTextContent();
+        return text == null ? null : text.trim();
     }
 }

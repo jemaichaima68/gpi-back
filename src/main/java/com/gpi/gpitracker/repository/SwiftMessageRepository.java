@@ -17,22 +17,15 @@ public interface SwiftMessageRepository extends JpaRepository<SwiftMessage, Long
 
     boolean existsByMsgId(String msgId);
 
-    // ✅ NOUVELLE MÉTHODE - Vérifier si UETR existe déjà (évite doublons)
     boolean existsByUetr(String uetr);
 
     Optional<SwiftMessage> findByMsgId(String msgId);
 
-    // ⚠️ À MODIFIER pour éviter NonUniqueResultException
-    // Optional<SwiftMessage> findByUetr(String uetr);  // ← ANCIENNE, à remplacer par :
-
-    // ✅ NOUVELLE MÉTHODE - Retourne le premier (le plus récent) par UETR
     Optional<SwiftMessage> findFirstByUetrOrderByReceivedAtDesc(String uetr);
 
-    // ✅ NOUVELLE MÉTHODE - Retourne le premier (le plus récent) par MsgId
     Optional<SwiftMessage> findFirstByMsgIdOrderByReceivedAtDesc(String msgId);
 
-    // ✅ Garder aussi la liste si besoin
-    List<SwiftMessage> findByUetr(String uetr);
+    Optional<SwiftMessage> findByUetr(String uetr);
 
     List<SwiftMessage> findByMessageType(String messageType);
 
@@ -47,8 +40,6 @@ public interface SwiftMessageRepository extends JpaRepository<SwiftMessage, Long
 
     long countByStatus(String status);
 
-    // ==================== MÉTHODES DE FILTRAGE PAR DATE ====================
-
     @Query("SELECT m FROM SwiftMessage m WHERE DATE(m.receivedAt) = :date")
     List<SwiftMessage> findByReceivedDate(@Param("date") LocalDate date);
 
@@ -60,6 +51,11 @@ public interface SwiftMessageRepository extends JpaRepository<SwiftMessage, Long
 
     @Query("SELECT DATE(m.receivedAt), COUNT(m) FROM SwiftMessage m GROUP BY DATE(m.receivedAt) ORDER BY DATE(m.receivedAt) DESC")
     List<Object[]> countTransactionsByDate();
+
+    // ==================== MÉTHODES POUR CAMT ====================
+
+    @Query("SELECT m FROM SwiftMessage m WHERE m.originalUetr = :originalUetr")
+    List<SwiftMessage> findByOriginalUetr(@Param("originalUetr") String originalUetr);
 
     @Query("SELECT m FROM SwiftMessage m WHERE m.clientEmail = :clientEmail" +
             " AND (:startDate IS NULL OR m.receivedAt >= :startDate)" +

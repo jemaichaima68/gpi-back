@@ -27,7 +27,7 @@ public class EmailService {
     @Value("${spring.mail.username}")
     private String fromEmail;
 
-    // ==================== EMAIL BIENVENUE ====================
+    // ==================== EMAIL DE BIENVENUE ====================
     public void sendWelcomeEmail(String toEmail, String firstName,
                                  String username, String password) {
         log.info(">>> Envoi email de bienvenue à : {}", toEmail);
@@ -45,12 +45,29 @@ public class EmailService {
         }
     }
 
-    // ==================== EMAIL TRANSACTION REÇUE ====================
+    // ==================== EMAIL TRANSACTION REÇUE (VERSION SYNCHRONE) ====================
+    public void sendTransactionReceivedEmailSync(String toEmail, String clientName, String uetr, BigDecimal amount, String currency) {
+        log.info(">>> Envoi email transaction reçue (SYNC) à : {}", toEmail);
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(fromEmail);
+            helper.setTo(toEmail);
+            helper.setSubject(appName + " - Confirmation de reception de votre transaction SWIFT");
+            helper.setText(buildTransactionReceivedHtml(clientName, uetr, amount, currency), true);
+            mailSender.send(message);
+            log.info("✅ Email transaction reçue envoyé avec succès à {}", toEmail);
+        } catch (Exception e) {
+            log.error("❌ Erreur envoi email transaction reçue à {}: {}", toEmail, e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    // ==================== EMAIL TRANSACTION REÇUE (ASYNC - conservée pour compatibilité) ====================
     @Async
     public CompletableFuture<Void> sendTransactionReceivedEmail(
             String toEmail, String clientName, String uetr, BigDecimal amount, String currency) {
-
-        log.info(">>> Envoi email transaction reçue à : {}", toEmail);
+        log.info(">>> Envoi email transaction reçue (ASYNC) à : {}", toEmail);
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
@@ -69,10 +86,9 @@ public class EmailService {
         }
     }
 
-    // ==================== EMAIL TRANSACTION ACCEPTÉE (VERSION SYNCHRONE) ====================
+    // ==================== EMAIL TRANSACTION ACCEPTÉE ====================
     public void sendTransactionAcceptedEmailSync(
             String toEmail, String clientName, String uetr, BigDecimal amount, String currency) {
-
         log.info(">>> Envoi email acceptation (SYNC) à : {}", toEmail);
         try {
             MimeMessage message = mailSender.createMimeMessage();
@@ -89,10 +105,9 @@ public class EmailService {
         }
     }
 
-    // ==================== EMAIL TRANSACTION REJETÉE (VERSION SYNCHRONE) ====================
+    // ==================== EMAIL TRANSACTION REJETÉE ====================
     public void sendTransactionRejectedEmailSync(
             String toEmail, String clientName, String uetr, String rejectionReason) {
-
         log.info(">>> Envoi email rejet (SYNC) à : {}", toEmail);
         try {
             MimeMessage message = mailSender.createMimeMessage();
@@ -109,51 +124,23 @@ public class EmailService {
         }
     }
 
-    // ==================== EMAIL TRANSACTION ACCEPTÉE (ASYNC - gardée pour compatibilité) ====================
-    @Async
-    public CompletableFuture<Void> sendTransactionAcceptedEmail(
-            String toEmail, String clientName, String uetr, BigDecimal amount, String currency) {
-
-        log.info(">>> Envoi email acceptation (ASYNC) à : {}", toEmail);
+    // ==================== EMAIL ACCEPTATION PAR AGENT ====================
+    public void sendTransactionAcceptedByAgentEmail(String toEmail, String clientName,
+                                                    String uetr, BigDecimal amount, String currency) {
+        log.info(">>> Envoi email acceptation par AGENT à : {}", toEmail);
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
             helper.setFrom(fromEmail);
             helper.setTo(toEmail);
-            helper.setSubject(appName + " - Decision : Transaction acceptee");
-            helper.setText(buildTransactionAcceptedHtml(clientName, uetr, amount, currency), true);
+            helper.setSubject(appName + " - Votre transfert a été accepté");
+            String html = buildTransactionAcceptedByAgentHtml(clientName, uetr, amount, currency);
+            helper.setText(html, true);
             mailSender.send(message);
-            log.info("✅ Email acceptation envoyé avec succès à {}", toEmail);
-            return CompletableFuture.completedFuture(null);
+            log.info("✅ Email acceptation agent envoyé avec succès à {}", toEmail);
         } catch (Exception e) {
-            log.error("❌ Erreur envoi email acceptation à {}: {}", toEmail, e.getMessage());
-            CompletableFuture<Void> failure = new CompletableFuture<>();
-            failure.completeExceptionally(e);
-            return failure;
-        }
-    }
-
-    // ==================== EMAIL TRANSACTION REJETÉE (ASYNC - gardée pour compatibilité) ====================
-    @Async
-    public CompletableFuture<Void> sendTransactionRejectedEmail(
-            String toEmail, String clientName, String uetr, String rejectionReason) {
-
-        log.info(">>> Envoi email rejet (ASYNC) à : {}", toEmail);
-        try {
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-            helper.setFrom(fromEmail);
-            helper.setTo(toEmail);
-            helper.setSubject(appName + " - Decision : Transaction non validee");
-            helper.setText(buildTransactionRejectedHtml(clientName, uetr, rejectionReason), true);
-            mailSender.send(message);
-            log.info("✅ Email rejet envoyé avec succès à {}", toEmail);
-            return CompletableFuture.completedFuture(null);
-        } catch (Exception e) {
-            log.error("❌ Erreur envoi email rejet à {}: {}", toEmail, e.getMessage());
-            CompletableFuture<Void> failure = new CompletableFuture<>();
-            failure.completeExceptionally(e);
-            return failure;
+            log.error("❌ Erreur envoi email acceptation agent à {}: {}", toEmail, e.getMessage());
+            throw new RuntimeException("Impossible d'envoyer l'email d'acceptation agent: " + e.getMessage(), e);
         }
     }
 
@@ -333,5 +320,77 @@ public class EmailService {
                 "</div>\n" +
                 "</body>\n" +
                 "</html>";
+    }
+
+    private String buildTransactionAcceptedByAgentHtml(String clientName, String uetr,
+                                                       BigDecimal amount, String currency) {
+        String amountStr = amount != null ? amount.toPlainString() : "0";
+        String currencyStr = currency != null ? currency : "EUR";
+        String uetrStr = uetr != null ? uetr : "";
+
+        return "<!DOCTYPE html>\n" +
+                "<html>\n" +
+                "<head><meta charset='UTF-8'><title>Transfert accepté</title>\n" +
+                "<style>\n" +
+                "body{font-family:'Segoe UI',Arial,sans-serif;background-color:#f4f6f9;margin:0;padding:0;}\n" +
+                ".container{max-width:600px;margin:20px auto;background-color:#ffffff;border-radius:8px;overflow:hidden;}\n" +
+                ".header{background-color:#10b981;padding:24px;text-align:center;}\n" +
+                ".header h1{color:#ffffff;margin:0;font-size:24px;}\n" +
+                ".content{padding:32px;}\n" +
+                ".info-box{background-color:#f0fdf4;border-left:4px solid #10b981;padding:20px;margin:20px 0;}\n" +
+                ".footer{background-color:#f4f6f9;padding:16px;text-align:center;font-size:12px;color:#888;}\n" +
+                "</style>\n" +
+                "</head>\n" +
+                "<body>\n" +
+                "<div class='container'>\n" +
+                "<div class='header'><h1>" + appName + "</h1></div>\n" +
+                "<div class='content'>\n" +
+                "<p>Bonjour <strong>" + clientName + "</strong>,</p>\n" +
+                "<p>Nous avons le plaisir de vous informer que votre transfert a été <strong>accepté</strong> par notre équipe.</p>\n" +
+                "<div class='info-box'>\n" +
+                "<p><strong>Référence UETR :</strong> " + uetrStr + "</p>\n" +
+                "<p><strong>Montant :</strong> " + amountStr + " " + currencyStr + "</p>\n" +
+                "</div>\n" +
+                "<p>Votre transfert va maintenant être transmis au réseau SWIFT pour traitement.</p>\n" +
+                "<p>Vous pouvez suivre l'avancement de votre transfert en temps réel depuis votre tableau de bord.</p>\n" +
+                "</div>\n" +
+                "<div class='footer'>\n" +
+                "<p>© 2026 " + appName + " - Tous droits réservés</p>\n" +
+                "</div>\n" +
+                "</div>\n" +
+                "</body>\n" +
+                "</html>";
+    }
+    public void sendCancellationAcceptedEmail(String toEmail, String clientName, String uetr, BigDecimal amount, String currency) {
+        try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(fromEmail);
+            helper.setTo(toEmail);
+            helper.setSubject(appName + " - Votre demande d'annulation a été acceptée");
+
+            String html = String.format("""
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset='UTF-8'></head>
+            <body>
+                <h3>Bonjour %s,</h3>
+                <p>Nous vous confirmons que votre demande d'annulation pour le transfert suivant a été <strong>acceptée</strong> :</p>
+                <ul>
+                    <li><strong>Référence UETR :</strong> %s</li>
+                    <li><strong>Montant :</strong> %s %s</li>
+                </ul>
+                <p>La transaction est maintenant définitivement annulée.</p>
+                <p>Cordialement,<br>Service des Opérations Bancaires</p>
+            </body>
+            </html>
+            """, clientName, uetr, amount, currency);
+
+            helper.setText(html, true);
+            mailSender.send(message);
+            log.info("Email annulation acceptée envoyé à {}", toEmail);
+        } catch (Exception e) {
+            log.error("Erreur envoi email annulation acceptée : {}", e.getMessage());
+        }
     }
 }
