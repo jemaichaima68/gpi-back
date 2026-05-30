@@ -32,13 +32,14 @@ public class AgentDashboardService {
 
         // Transactions déjà traitées (acceptées ou rejetées)
         long totalTraitees = allMessages.stream()
-                .filter(m -> "ACCEPTE".equals(m.getStatus()) || "REJETE".equals(m.getStatus())
+                .filter(m -> SwiftMessage.STATUS_ACCEPTED.equals(m.getStatus())
+                        || SwiftMessage.STATUS_REJECTED.equals(m.getStatus())
                         || "ACCP".equals(m.getStatus()) || "RJCT".equals(m.getStatus()))
                 .count();
 
         // Transactions acceptées
         long acceptees = allMessages.stream()
-                .filter(m -> "ACCEPTE".equals(m.getStatus()) || "ACCP".equals(m.getStatus()))
+                .filter(m -> SwiftMessage.STATUS_ACCEPTED.equals(m.getStatus()) || "ACCP".equals(m.getStatus()))
                 .count();
 
         // Taux d'acceptation
@@ -77,16 +78,17 @@ public class AgentDashboardService {
         List<SwiftMessage> todaysMessages = swiftMessageRepository.findByReceivedAtBetween(startOfDay, endOfDay);
 
         long traitees = todaysMessages.stream()
-                .filter(m -> "ACCEPTE".equals(m.getStatus()) || "REJETE".equals(m.getStatus())
+                .filter(m -> SwiftMessage.STATUS_ACCEPTED.equals(m.getStatus())
+                        || SwiftMessage.STATUS_REJECTED.equals(m.getStatus())
                         || "ACCP".equals(m.getStatus()) || "RJCT".equals(m.getStatus()))
                 .count();
 
         long acceptees = todaysMessages.stream()
-                .filter(m -> "ACCEPTE".equals(m.getStatus()) || "ACCP".equals(m.getStatus()))
+                .filter(m -> SwiftMessage.STATUS_ACCEPTED.equals(m.getStatus()) || "ACCP".equals(m.getStatus()))
                 .count();
 
         long rejetees = todaysMessages.stream()
-                .filter(m -> "REJETE".equals(m.getStatus()) || "RJCT".equals(m.getStatus()))
+                .filter(m -> SwiftMessage.STATUS_REJECTED.equals(m.getStatus()) || "RJCT".equals(m.getStatus()))
                 .count();
 
         Map<String, Object> stats = new HashMap<>();
@@ -112,7 +114,8 @@ public class AgentDashboardService {
                 LocalDateTime end = date.atTime(23, 59, 59);
 
                 long count = swiftMessageRepository.findByReceivedAtBetween(start, end).stream()
-                        .filter(m -> "ACCEPTE".equals(m.getStatus()) || "REJETE".equals(m.getStatus())
+                        .filter(m -> SwiftMessage.STATUS_ACCEPTED.equals(m.getStatus())
+                                || SwiftMessage.STATUS_REJECTED.equals(m.getStatus())
                                 || "ACCP".equals(m.getStatus()) || "RJCT".equals(m.getStatus()))
                         .count();
 
@@ -128,7 +131,8 @@ public class AgentDashboardService {
                 LocalDateTime end = weekEnd.atTime(23, 59, 59);
 
                 long count = swiftMessageRepository.findByReceivedAtBetween(start, end).stream()
-                        .filter(m -> "ACCEPTE".equals(m.getStatus()) || "REJETE".equals(m.getStatus())
+                        .filter(m -> SwiftMessage.STATUS_ACCEPTED.equals(m.getStatus())
+                                || SwiftMessage.STATUS_REJECTED.equals(m.getStatus())
                                 || "ACCP".equals(m.getStatus()) || "RJCT".equals(m.getStatus()))
                         .count();
 
@@ -152,7 +156,7 @@ public class AgentDashboardService {
                 .filter(m -> "EN_ATTENTE".equals(m.getStatus()) || "PDNG".equals(m.getStatus()))
                 .limit(limit)
                 .map(this::convertToDto)
-                .collect(Collectors.toList());
+                .toList();
     }
 
     /**
@@ -160,7 +164,8 @@ public class AgentDashboardService {
      */
     public List<RecentTransactionDto> getRecentProcessedMessages(int limit) {
         return swiftMessageRepository.findAllByOrderByReceivedAtDesc().stream()
-                .filter(m -> "ACCEPTE".equals(m.getStatus()) || "REJETE".equals(m.getStatus())
+                .filter(m -> SwiftMessage.STATUS_ACCEPTED.equals(m.getStatus())
+                        || SwiftMessage.STATUS_REJECTED.equals(m.getStatus())
                         || "ACCP".equals(m.getStatus()) || "RJCT".equals(m.getStatus()))
                 .limit(limit)
                 .map(this::convertToDto)

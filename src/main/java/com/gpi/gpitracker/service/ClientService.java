@@ -27,13 +27,16 @@ public class ClientService {
     private final ClientConsultationRepository clientConsultationRepository;
     private final BankDirectoryRepository bankDirectoryRepository;
     private final BankJourneyService bankJourneyService;
+    private final BankJourneyMockService bankJourneyMockService;
 
-    // ==================== STATUTS MÉTIER CLIENT ====================
+    // ==================== CONSTANTES ====================
     private static final String STATUS_PENDING = "PDNG";
     private static final String STATUS_ACCEPTED = "ACCEPTE";
     private static final String STATUS_REJECTED = "REJETE";
     private static final String STATUS_CANCEL_PENDING = "ANNULATION_EN_ATTENTE";
     private static final String STATUS_CANCELLED = "ANNULEE";
+    private static final String CURRENCY_EUR = "EUR";
+    private static final String MESSAGE_TYPE_PACS008 = "PACS008";
 
     // ==================== TRANSFERTS ====================
 
@@ -69,12 +72,6 @@ public class ClientService {
         return Optional.of(toTransferResponseDto(tx));
     }
 
-    /**
-     * Important :
-     * Le client recherche par UETR, mais plusieurs messages peuvent porter le même UETR :
-     * PACS008, CAMT056, CAMT029...
-     * Pour l'espace client, on affiche toujours la transaction métier originale, donc PACS008.
-     */
     private Optional<SwiftMessage> findClientOriginalTransactionByUetr(String uetr, String clientEmail) {
         if (uetr == null || uetr.isBlank()) {
             return Optional.empty();
@@ -88,10 +85,10 @@ public class ClientService {
     }
 
     private boolean isClientVisibleTransaction(SwiftMessage message) {
-        return "PACS008".equals(message.getMessageType());
+        return MESSAGE_TYPE_PACS008.equals(message.getMessageType());
     }
 
-// ==================== TIMELINE CLIENT SIMPLIFIÉE ====================
+    // ==================== TIMELINE CLIENT ====================
 
     public List<TransactionTimelineDto> getTransactionTimeline(Long id, String clientEmail) {
         Optional<SwiftMessage> opt = swiftMessageRepository.findById(id);
@@ -99,14 +96,12 @@ public class ClientService {
 
         SwiftMessage msg = opt.get();
 
-        // Vérifier que le client a accès à cette transaction
         if (clientEmail != null && msg.getClientEmail() != null && !clientEmail.equals(msg.getClientEmail())) {
             return Collections.emptyList();
         }
 
         List<TransactionTimelineDto> timeline = new ArrayList<>();
 
-        // Étape 1 : Réception (toujours présente)
         TransactionTimelineDto step1 = new TransactionTimelineDto();
         step1.setStatus("RECEIVED");
         step1.setStatusLabel("Reçue");
@@ -115,11 +110,9 @@ public class ClientService {
         step1.setCompleted(true);
         timeline.add(step1);
 
-        // Étape 2 : Décision (Acceptée ou Rejetée)
         TransactionTimelineDto step2 = new TransactionTimelineDto();
 
-        if ("REJETE".equals(msg.getStatus())) {
-            // Transaction rejetée
+        if (STATUS_REJECTED.equals(msg.getStatus())) {
             step2.setStatus("REJECTED");
             step2.setStatusLabel("Rejetée");
             String reason = msg.getRejectionReason() != null ? msg.getRejectionReason() : "Non spécifié";
@@ -128,8 +121,7 @@ public class ClientService {
             step2.setCompleted(true);
             timeline.add(step2);
 
-        } else if ("ANNULEE".equals(msg.getStatus())) {
-            // Transaction annulée (après acceptation)
+        } else if (STATUS_CANCELLED.equals(msg.getStatus())) {
             step2.setStatus("ACCEPTED");
             step2.setStatusLabel("Acceptée");
             step2.setDescription("Votre transfert a été accepté par notre équipe.");
@@ -137,7 +129,6 @@ public class ClientService {
             step2.setCompleted(true);
             timeline.add(step2);
 
-            // Étape 3 : Annulation
             TransactionTimelineDto step3 = new TransactionTimelineDto();
             step3.setStatus("CANCELLED");
             step3.setStatusLabel("Annulée");
@@ -146,8 +137,7 @@ public class ClientService {
             step3.setCompleted(true);
             timeline.add(step3);
 
-        } else if ("ACCEPTE".equals(msg.getStatus())) {
-            // Transaction acceptée (finale)
+        } else if (STATUS_ACCEPTED.equals(msg.getStatus())) {
             step2.setStatus("ACCEPTED");
             step2.setStatusLabel("Acceptée");
             step2.setDescription("Votre transfert a été accepté et sera traité par notre réseau bancaire.");
@@ -155,8 +145,7 @@ public class ClientService {
             step2.setCompleted(true);
             timeline.add(step2);
 
-        } else if ("ANNULATION_EN_ATTENTE".equals(msg.getStatus())) {
-            // Annulation en attente
+        } else if (STATUS_CANCEL_PENDING.equals(msg.getStatus())) {
             step2.setStatus("ACCEPTED");
             step2.setStatusLabel("Acceptée");
             step2.setDescription("Votre transfert a été accepté par notre équipe.");
@@ -164,7 +153,6 @@ public class ClientService {
             step2.setCompleted(true);
             timeline.add(step2);
 
-            // Étape 3 : Annulation en attente
             TransactionTimelineDto step3 = new TransactionTimelineDto();
             step3.setStatus("CANCELLATION_PENDING");
             step3.setStatusLabel("Annulation en cours");
@@ -174,7 +162,6 @@ public class ClientService {
             timeline.add(step3);
 
         } else {
-            // En attente de décision
             step2.setStatus("PENDING");
             step2.setStatusLabel("En attente");
             step2.setDescription("Votre transfert est en cours d'analyse par notre équipe.");
@@ -211,7 +198,7 @@ public class ClientService {
         List<SwiftMessage> messages = swiftMessageRepository.findAllByOrderByReceivedAtDesc().stream()
                 .filter(m -> clientEmail != null && clientEmail.equals(m.getClientEmail()))
                 .filter(this::isClientVisibleTransaction)
-                .collect(Collectors.toList());
+                .toList();
 
         log.info("Dashboard client {} : {} transaction(s)", clientEmail, messages.size());
 
@@ -258,7 +245,7 @@ public class ClientService {
             recentDto.setAgentValidated(m.getAgentValidated());
             recentDto.setRejectionReason(m.getRejectionReason());
             return recentDto;
-        }).collect(Collectors.toList()));
+        }).toList());
 
         dto.setStatusDistribution(messages.stream()
                 .collect(Collectors.groupingBy(SwiftMessage::getStatus, Collectors.counting())));
@@ -295,6 +282,16 @@ public class ClientService {
         dto.setCancellationStatus(message.getCancellationStatus());
 
         List<BankJourneyDto> journey = bankJourneyService.getBankJourneyByUetr(message.getUetr(), message.getClientEmail());
+
+        if (journey == null || journey.isEmpty()) {
+            journey = bankJourneyMockService.generateMockJourney(
+                    message.getDebtorCountry(),
+                    message.getCreditorCountry(),
+                    message.getAmount()
+            );
+            log.info("Parcours bancaire mocké généré pour UETR: {}", message.getUetr());
+        }
+
         dto.setBankJourney(journey);
         dto.setTotalFees(calculateTotalFeesFromSteps(journey));
         dto.setNetAmount(calculateNetAmountFromSteps(message, journey));
@@ -328,7 +325,7 @@ public class ClientService {
         double totalFees = calculateTotalFeesFromSteps(journey);
         double net = amount - totalFees;
 
-        if ("EUR".equals(message.getCurrency()) && net > 0) {
+        if (CURRENCY_EUR.equals(message.getCurrency()) && net > 0) {
             net = net * 1.09;
         }
 
@@ -363,7 +360,7 @@ public class ClientService {
         } else {
             dto.setStatus(STATUS_PENDING);
             dto.setAmount(BigDecimal.ZERO);
-            dto.setCurrency("EUR");
+            dto.setCurrency(CURRENCY_EUR);
             dto.setUpdatedAt(consultation.getConsultedAt());
         }
 
@@ -389,7 +386,7 @@ public class ClientService {
                 .filter(m -> status == null || status.isBlank() || (m.getStatus() != null && m.getStatus().equals(status)))
                 .filter(m -> creditorCountry == null || creditorCountry.isBlank()
                         || (m.getCreditorCountry() != null && m.getCreditorCountry().equals(creditorCountry)))
-                .collect(Collectors.toList());
+                .toList();
     }
 
     // ==================== HISTORIQUE ====================
@@ -398,7 +395,7 @@ public class ClientService {
         return clientConsultationRepository.findByClientEmailOrderByConsultedAtDesc(clientEmail)
                 .stream()
                 .map(this::toConsultationHistoryDto)
-                .collect(Collectors.toList());
+                .toList();
     }
 
     @Transactional

@@ -71,10 +71,6 @@ public class ClientController {
             return ResponseEntity.notFound().build();
         }
 
-        // ✅ جلب المسار البنكي الخاص بهذا التحويل فقط
-        List<BankJourneyDto> bankJourney = bankJourneyService.getBankJourneyByUetr(uetr, clientEmail);
-        transfer.setBankJourney(bankJourney);
-
         return ResponseEntity.ok(transfer);
     }
 
@@ -89,8 +85,6 @@ public class ClientController {
         }
 
 
-        List<BankJourneyDto> bankJourney = bankJourneyService.getBankJourneyByTransactionId(id, clientEmail);
-        transfer.setBankJourney(bankJourney);
 
         return ResponseEntity.ok(transfer);
     }

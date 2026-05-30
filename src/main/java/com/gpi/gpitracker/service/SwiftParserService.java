@@ -34,16 +34,64 @@ public class SwiftParserService {
     private final BankDirectoryRepository bankDirectoryRepository;
     private final XmlValidationService xmlValidationService;
 
+    // ==================== CONSTANTES ====================
+    private static final String MSG_TYPE_PACS008 = "PACS008";
+    private static final String MSG_TYPE_PACS009 = "PACS009";
+    private static final String MSG_TYPE_PACS002 = "PACS002";
+    private static final String MSG_TYPE_CAMT056 = "CAMT056";
+    private static final String MSG_TYPE_CAMT029 = "CAMT029";
+    private static final String STATUS_PENDING = "EN_ATTENTE";
+    private static final String STATUS_RECEIVED = "RECEIVED";
+    private static final String TAG_BICFI = "BICFI";
+    private static final String TAG_FIN_INSTN_ID = "FinInstnId";
+    private static final String DIRECTION_IN = "IN";
+    private static final String XML_TAG_MSG_ID = "MsgId";
+    private static final String XML_TAG_CRE_DT_TM = "CreDtTm";
+    private static final String XML_TAG_INSTD_AMT = "InstdAmt";
+    private static final String XML_TAG_INTR_BK_STTLM_AMT = "IntrBkSttlmAmt";
+    private static final String XML_TAG_CDTR_TRF_TX_INF = "CdtTrfTxInf";
+    private static final String XML_TAG_PMT_ID = "PmtId";
+    private static final String XML_TAG_INSTR_ID = "InstrId";
+    private static final String XML_TAG_END_TO_END_ID = "EndToEndId";
+    private static final String XML_TAG_UETR = "UETR";
+    private static final String XML_TAG_CHRG_BR = "ChrgBr";
+    private static final String XML_TAG_DBTR = "Dbtr";
+    private static final String XML_TAG_NM = "Nm";
+    private static final String XML_TAG_PSTL_ADR = "PstlAdr";
+    private static final String XML_TAG_CTRY = "Ctry";
+    private static final String XML_TAG_CDTR = "Cdtr";
+    private static final String XML_TAG_DBTR_ACCT = "DbtrAcct";
+    private static final String XML_TAG_CDTR_ACCT = "CdtrAcct";
+    private static final String XML_TAG_ID = "Id";
+    private static final String XML_TAG_IBAN = "IBAN";
+    private static final String XML_TAG_DBTR_AGT = "DbtrAgt";
+    private static final String XML_TAG_CDTR_AGT = "CdtrAgt";
+    private static final String XML_TAG_INSTG_AGT = "InstgAgt";
+    private static final String XML_TAG_INSTD_AGT = "InstdAgt";
+    private static final String XML_TAG_RMT_INF = "RmtInf";
+    private static final String XML_TAG_USTRD = "Ustrd";
+    private static final String XML_TAG_GRP_HDR = "GrpHdr";
+    private static final String XML_TAG_TX_INF_AND_STS = "TxInfAndSts";
+    private static final String XML_TAG_ORGNL_GRP_INF = "OrgnlGrpInf";
+    private static final String XML_TAG_ORGNL_MSG_ID = "OrgnlMsgId";
+    private static final String XML_TAG_ORGNL_UETR = "OrgnlUETR";
+    private static final String XML_TAG_ORGNL_END_TO_END_ID = "OrgnlEndToEndId";
+    private static final String XML_TAG_TX_STS = "TxSts";
+    private static final String XML_TAG_STS_RSN_INF = "StsRsnInf";
+    private static final String XML_TAG_RSN = "Rsn";
+    private static final String XML_TAG_CD = "Cd";
+    private static final String XML_TAG_ADDTL_INF = "AddtlInf";
+
     public SwiftMessage parse(File xmlFile) {
         String type = detectMessageType(xmlFile);
         log.info("Type détecté : {} pour {}", type, xmlFile.getName());
 
         return switch (type) {
-            case "PACS008" -> parsePacs008(xmlFile);
-            case "PACS009" -> parsePacs009(xmlFile);
-            case "PACS002" -> parsePacs002(xmlFile);
-            case "CAMT056" -> camtParserService.parseCamt056(xmlFile);
-            case "CAMT029" -> camtParserService.parseCamt029(xmlFile);
+            case MSG_TYPE_PACS008 -> parsePacs008(xmlFile);
+            case MSG_TYPE_PACS009 -> parsePacs009(xmlFile);
+            case MSG_TYPE_PACS002 -> parsePacs002(xmlFile);
+            case MSG_TYPE_CAMT056 -> camtParserService.parseCamt056(xmlFile);
+            case MSG_TYPE_CAMT029 -> camtParserService.parseCamt029(xmlFile);
             default -> {
                 log.warn("Type non supporté : {}", type);
                 yield null;
@@ -54,11 +102,11 @@ public class SwiftParserService {
     private String detectMessageType(File xmlFile) {
         String name = xmlFile.getName().toLowerCase();
 
-        if (name.contains("pacs.008") || name.contains("pacs008") || name.contains("008")) return "PACS008";
-        if (name.contains("pacs.009") || name.contains("pacs009") || name.contains("009")) return "PACS009";
-        if (name.contains("pacs.002") || name.contains("pacs002") || name.contains("002")) return "PACS002";
-        if (name.contains("camt.056") || name.contains("camt056") || name.contains("056")) return "CAMT056";
-        if (name.contains("camt.029") || name.contains("camt029") || name.contains("029")) return "CAMT029";
+        if (name.contains("pacs.008") || name.contains("pacs008") || name.contains("008")) return MSG_TYPE_PACS008;
+        if (name.contains("pacs.009") || name.contains("pacs009") || name.contains("009")) return MSG_TYPE_PACS009;
+        if (name.contains("pacs.002") || name.contains("pacs002") || name.contains("002")) return MSG_TYPE_PACS002;
+        if (name.contains("camt.056") || name.contains("camt056") || name.contains("056")) return MSG_TYPE_CAMT056;
+        if (name.contains("camt.029") || name.contains("camt029") || name.contains("029")) return MSG_TYPE_CAMT029;
 
         return detectFromXml(xmlFile);
     }
@@ -69,11 +117,11 @@ public class SwiftParserService {
             String namespace = doc.getDocumentElement().getNamespaceURI();
             String content = namespace != null ? namespace : doc.getDocumentElement().getTextContent();
 
-            if (content.contains("pacs.008")) return "PACS008";
-            if (content.contains("pacs.009")) return "PACS009";
-            if (content.contains("pacs.002")) return "PACS002";
-            if (content.contains("camt.056")) return "CAMT056";
-            if (content.contains("camt.029")) return "CAMT029";
+            if (content.contains("pacs.008")) return MSG_TYPE_PACS008;
+            if (content.contains("pacs.009")) return MSG_TYPE_PACS009;
+            if (content.contains("pacs.002")) return MSG_TYPE_PACS002;
+            if (content.contains("camt.056")) return MSG_TYPE_CAMT056;
+            if (content.contains("camt.029")) return MSG_TYPE_CAMT029;
         } catch (Exception e) {
             log.error("Détection XML impossible : {}", e.getMessage());
         }
@@ -92,11 +140,10 @@ public class SwiftParserService {
         }
 
         String cleaned = value
-                .replace("_", "-")           // underscore → trait d'union
-                .replace(" ", "-")            // espace → trait d'union
+                .replace("_", "-")
+                .replace(" ", "-")
                 .replaceAll("[^a-zA-Z0-9/\\-?:\\(\\)\\.,'\\+]", "-");
 
-        // Limiter à 35 caractères (Max35Text)
         if (cleaned.length() > 35) {
             cleaned = cleaned.substring(0, 35);
         }
@@ -117,7 +164,6 @@ public class SwiftParserService {
             return UUID.randomUUID().toString();
         }
 
-        // Pattern UUID v4
         String uuidPattern = "[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}";
         if (!uetr.toLowerCase().matches(uuidPattern)) {
             log.warn("UETR invalide: '{}', génération d'un nouveau UUID", uetr);
@@ -130,7 +176,7 @@ public class SwiftParserService {
     // ==================== PARSING PACS008 ====================
 
     private SwiftMessage parsePacs008(File xmlFile) {
-        SwiftMessage message = parseCommonPayment(xmlFile, "PACS008");
+        SwiftMessage message = parseCommonPayment(xmlFile, MSG_TYPE_PACS008);
 
         if (message != null) {
             autoRegisterBank(message.getDebtorAgentBic());
@@ -145,7 +191,7 @@ public class SwiftParserService {
     // ==================== PARSING PACS009 ====================
 
     private SwiftMessage parsePacs009(File xmlFile) {
-        SwiftMessage message = parseCommonPayment(xmlFile, "PACS009");
+        SwiftMessage message = parseCommonPayment(xmlFile, MSG_TYPE_PACS009);
 
         if (message == null) {
             log.error("❌ Échec parsing PACS009");
@@ -177,16 +223,15 @@ public class SwiftParserService {
             SwiftMessage message = new SwiftMessage();
             message.setMessageType(messageType);
             message.setFileName(xmlFile.getName());
-            message.setStatus("EN_ATTENTE");
+            message.setStatus(STATUS_PENDING);
             message.setReceivedAt(LocalDateTime.now());
 
-            Element grpHdr = getFirstElement(doc, "GrpHdr");
+            Element grpHdr = getFirstElement(doc, XML_TAG_GRP_HDR);
             if (grpHdr != null) {
-                // ⭐ NETTOYAGE DU MSG_ID
-                String rawMsgId = getChildText(grpHdr, "MsgId");
+                String rawMsgId = getChildText(grpHdr, XML_TAG_MSG_ID);
                 message.setMsgId(sanitizeForXsd(rawMsgId));
 
-                String creDtTm = getChildText(grpHdr, "CreDtTm");
+                String creDtTm = getChildText(grpHdr, XML_TAG_CRE_DT_TM);
                 if (creDtTm != null && !creDtTm.isBlank()) {
                     try {
                         message.setCreationDateTime(LocalDateTime.parse(creDtTm, DateTimeFormatter.ISO_DATE_TIME));
@@ -196,25 +241,24 @@ public class SwiftParserService {
                 }
             }
 
-            Element txInf = getFirstElement(doc, "CdtTrfTxInf");
+            Element txInf = getFirstElement(doc, XML_TAG_CDTR_TRF_TX_INF);
             String debtorName = null;
             String debtorIban = null;
 
             if (txInf != null) {
-                Element pmtId = getFirstChildElement(txInf, "PmtId");
+                Element pmtId = getFirstChildElement(txInf, XML_TAG_PMT_ID);
                 if (pmtId != null) {
-                    // ⭐ NETTOYAGE DES IDs
-                    String rawInstrId = getChildText(pmtId, "InstrId");
-                    String rawEndToEndId = getChildText(pmtId, "EndToEndId");
-                    String rawUetr = getChildText(pmtId, "UETR");
+                    String rawInstrId = getChildText(pmtId, XML_TAG_INSTR_ID);
+                    String rawEndToEndId = getChildText(pmtId, XML_TAG_END_TO_END_ID);
+                    String rawUetr = getChildText(pmtId, XML_TAG_UETR);
 
                     message.setInstructionId(sanitizeForXsd(rawInstrId));
                     message.setEndToEndId(sanitizeForXsd(rawEndToEndId));
                     message.setUetr(sanitizeUetr(rawUetr));
                 }
 
-                Element amt = getFirstElement(doc, "InstdAmt");
-                if (amt == null) amt = getFirstElement(doc, "IntrBkSttlmAmt");
+                Element amt = getFirstElement(doc, XML_TAG_INSTD_AMT);
+                if (amt == null) amt = getFirstElement(doc, XML_TAG_INTR_BK_STTLM_AMT);
                 if (amt != null) {
                     message.setCurrency(amt.getAttribute("Ccy"));
                     if (amt.getTextContent() != null && !amt.getTextContent().isBlank()) {
@@ -222,16 +266,16 @@ public class SwiftParserService {
                     }
                 }
 
-                message.setChargeBearer(getChildText(txInf, "ChrgBr"));
+                message.setChargeBearer(getChildText(txInf, XML_TAG_CHRG_BR));
 
-                Element dbtr = getFirstChildElement(txInf, "Dbtr");
+                Element dbtr = getFirstChildElement(txInf, XML_TAG_DBTR);
                 if (dbtr != null) {
-                    debtorName = getChildText(dbtr, "Nm");
+                    debtorName = getChildText(dbtr, XML_TAG_NM);
                     message.setDebtorName(debtorName);
 
-                    Element dbtrPstlAdr = getFirstChildElement(dbtr, "PstlAdr");
+                    Element dbtrPstlAdr = getFirstChildElement(dbtr, XML_TAG_PSTL_ADR);
                     if (dbtrPstlAdr != null) {
-                        String debtorCountry = getChildText(dbtrPstlAdr, "Ctry");
+                        String debtorCountry = getChildText(dbtrPstlAdr, XML_TAG_CTRY);
                         if (debtorCountry != null && !debtorCountry.isBlank()) {
                             message.setDebtorCountry(debtorCountry);
                             log.info("Pays débiteur extrait: {}", debtorCountry);
@@ -239,13 +283,13 @@ public class SwiftParserService {
                     }
                 }
 
-                Element cdtr = getFirstChildElement(txInf, "Cdtr");
+                Element cdtr = getFirstChildElement(txInf, XML_TAG_CDTR);
                 if (cdtr != null) {
-                    message.setCreditorName(getChildText(cdtr, "Nm"));
+                    message.setCreditorName(getChildText(cdtr, XML_TAG_NM));
 
-                    Element cdtrPstlAdr = getFirstChildElement(cdtr, "PstlAdr");
+                    Element cdtrPstlAdr = getFirstChildElement(cdtr, XML_TAG_PSTL_ADR);
                     if (cdtrPstlAdr != null) {
-                        String creditorCountry = getChildText(cdtrPstlAdr, "Ctry");
+                        String creditorCountry = getChildText(cdtrPstlAdr, XML_TAG_CTRY);
                         if (creditorCountry != null && !creditorCountry.isBlank()) {
                             message.setCreditorCountry(creditorCountry);
                             log.info("Pays créditeur extrait: {}", creditorCountry);
@@ -253,32 +297,31 @@ public class SwiftParserService {
                     }
                 }
 
-                if ("PACS008".equals(messageType)) {
-                    debtorIban = extractIban(txInf, "DbtrAcct");
+                if (MSG_TYPE_PACS008.equals(messageType)) {
+                    debtorIban = extractIban(txInf, XML_TAG_DBTR_ACCT);
                     message.setDebtorIban(debtorIban);
-                    message.setCreditorIban(extractIban(txInf, "CdtrAcct"));
+                    message.setCreditorIban(extractIban(txInf, XML_TAG_CDTR_ACCT));
                 }
 
-                message.setDebtorAgentBic(extractBic(txInf, "DbtrAgt"));
-                message.setCreditorAgentBic(extractBic(txInf, "CdtrAgt"));
-                message.setInstructingAgentBic(extractBic(txInf, "InstgAgt"));
-                message.setInstructedAgentBic(extractBic(txInf, "InstdAgt"));
+                message.setDebtorAgentBic(extractBic(txInf, XML_TAG_DBTR_AGT));
+                message.setCreditorAgentBic(extractBic(txInf, XML_TAG_CDTR_AGT));
+                message.setInstructingAgentBic(extractBic(txInf, XML_TAG_INSTG_AGT));
+                message.setInstructedAgentBic(extractBic(txInf, XML_TAG_INSTD_AGT));
 
-                Element rmtInf = getFirstChildElement(txInf, "RmtInf");
-                if (rmtInf != null) message.setRemittanceInfo(getChildText(rmtInf, "Ustrd"));
+                Element rmtInf = getFirstChildElement(txInf, XML_TAG_RMT_INF);
+                if (rmtInf != null) message.setRemittanceInfo(getChildText(rmtInf, XML_TAG_USTRD));
             }
 
-            // Fallback si MsgId est null après nettoyage
+            // Fallbacks
             if (message.getMsgId() == null || message.getMsgId().isBlank()) {
                 message.setMsgId(messageType + "-" + System.currentTimeMillis());
             }
 
-            // Fallback si UETR est null après nettoyage
             if (message.getUetr() == null || message.getUetr().isBlank()) {
                 message.setUetr(UUID.randomUUID().toString());
             }
 
-            if ("PACS008".equals(messageType)) {
+            if (MSG_TYPE_PACS008.equals(messageType)) {
                 assignClientAndSendEmail(message, debtorName, debtorIban);
             } else {
                 log.info("📨 PACS009 reçu (interbancaire) - Pas d'association client");
@@ -405,68 +448,68 @@ public class SwiftParserService {
             Document doc = parseXml(xmlFile);
 
             SwiftMessage message = new SwiftMessage();
-            message.setMessageType("PACS002");
+            message.setMessageType(MSG_TYPE_PACS002);
             message.setFileName(xmlFile.getName());
-            message.setDirection("IN");
+            message.setDirection(DIRECTION_IN);
             message.setReceivedAt(LocalDateTime.now());
-            message.setStatus("RECEIVED");
+            message.setStatus(STATUS_RECEIVED);
 
-            Element grpHdr = getFirstElement(doc, "GrpHdr");
+            Element grpHdr = getFirstElement(doc, XML_TAG_GRP_HDR);
             if (grpHdr != null) {
-                message.setMsgId(getChildText(grpHdr, "MsgId"));
+                message.setMsgId(getChildText(grpHdr, XML_TAG_MSG_ID));
             }
 
-            Element txInfAndSts = getFirstElement(doc, "TxInfAndSts");
+            Element txInfAndSts = getFirstElement(doc, XML_TAG_TX_INF_AND_STS);
             if (txInfAndSts != null) {
-                Element orgnlGrpInf = getFirstChildElement(txInfAndSts, "OrgnlGrpInf");
+                Element orgnlGrpInf = getFirstChildElement(txInfAndSts, XML_TAG_ORGNL_GRP_INF);
                 if (orgnlGrpInf != null) {
-                    message.setOriginalMsgId(getChildText(orgnlGrpInf, "OrgnlMsgId"));
+                    message.setOriginalMsgId(getChildText(orgnlGrpInf, XML_TAG_ORGNL_MSG_ID));
                 }
 
-                message.setOriginalUetr(getChildText(txInfAndSts, "OrgnlUETR"));
+                message.setOriginalUetr(getChildText(txInfAndSts, XML_TAG_ORGNL_UETR));
                 message.setUetr(message.getOriginalUetr());
-                message.setEndToEndId(getChildText(txInfAndSts, "OrgnlEndToEndId"));
+                message.setEndToEndId(getChildText(txInfAndSts, XML_TAG_ORGNL_END_TO_END_ID));
 
-                String txSts = getChildText(txInfAndSts, "TxSts");
+                String txSts = getChildText(txInfAndSts, XML_TAG_TX_STS);
                 if (txSts != null) {
                     message.setGroupStatus(txSts);
                     message.setStatus(mapPacs002Status(txSts));
                 }
 
-                Element stsRsnInf = getFirstChildElement(txInfAndSts, "StsRsnInf");
+                Element stsRsnInf = getFirstChildElement(txInfAndSts, XML_TAG_STS_RSN_INF);
                 if (stsRsnInf != null) {
-                    Element rsn = getFirstChildElement(stsRsnInf, "Rsn");
+                    Element rsn = getFirstChildElement(stsRsnInf, XML_TAG_RSN);
                     if (rsn != null) {
-                        String reasonCd = getChildText(rsn, "Cd");
+                        String reasonCd = getChildText(rsn, XML_TAG_CD);
                         if (reasonCd != null) {
                             message.setRejectionReason(reasonCd);
                         }
                     }
-                    String addtlInf = getChildText(stsRsnInf, "AddtlInf");
+                    String addtlInf = getChildText(stsRsnInf, XML_TAG_ADDTL_INF);
                     if (addtlInf != null && message.getRejectionReason() == null) {
                         message.setRejectionReason(addtlInf);
                     }
                 }
 
-                Element instgAgt = getFirstChildElement(txInfAndSts, "InstgAgt");
+                Element instgAgt = getFirstChildElement(txInfAndSts, XML_TAG_INSTG_AGT);
                 if (instgAgt != null) {
-                    Element finInstnId = getFirstChildElement(instgAgt, "FinInstnId");
+                    Element finInstnId = getFirstChildElement(instgAgt, TAG_FIN_INSTN_ID);
                     if (finInstnId != null) {
-                        message.setInstructingAgentBic(getChildText(finInstnId, "BICFI"));
+                        message.setInstructingAgentBic(getChildText(finInstnId, TAG_BICFI));
                     }
                 }
 
-                Element instdAgt = getFirstChildElement(txInfAndSts, "InstdAgt");
+                Element instdAgt = getFirstChildElement(txInfAndSts, XML_TAG_INSTD_AGT);
                 if (instdAgt != null) {
-                    Element finInstnId = getFirstChildElement(instdAgt, "FinInstnId");
+                    Element finInstnId = getFirstChildElement(instdAgt, TAG_FIN_INSTN_ID);
                     if (finInstnId != null) {
-                        message.setInstructedAgentBic(getChildText(finInstnId, "BICFI"));
+                        message.setInstructedAgentBic(getChildText(finInstnId, TAG_BICFI));
                     }
                 }
             }
 
             if (message.getMsgId() == null || message.getMsgId().isBlank()) {
-                message.setMsgId("PACS002-" + System.currentTimeMillis());
+                message.setMsgId(MSG_TYPE_PACS002 + "-" + System.currentTimeMillis());
             }
 
             updateOriginalFromPacs002(message);
@@ -501,7 +544,7 @@ public class SwiftParserService {
             swiftMessageRepository.save(original);
 
             if (original.getClientEmail() != null && !original.getClientEmail().isBlank()) {
-                if ("ACCEPTE".equals(original.getStatus())) {
+                if (SwiftMessage.STATUS_ACCEPTED.equals(original.getStatus())) {
                     notificationService.createNotification(
                             original.getClientEmail(),
                             "Transaction acceptee",
@@ -509,7 +552,7 @@ public class SwiftParserService {
                             "success",
                             original.getUetr()
                     );
-                } else if ("REJETE".equals(original.getStatus())) {
+                } else if (SwiftMessage.STATUS_REJECTED.equals(original.getStatus())) {
                     notificationService.createNotification(
                             original.getClientEmail(),
                             "Transaction rejetee",
@@ -524,10 +567,10 @@ public class SwiftParserService {
 
     private String mapPacs002Status(String isoStatus) {
         return switch (isoStatus) {
-            case "ACCP" -> "ACCEPTE";
-            case "RJCT" -> "REJETE";
-            case "PDNG" -> "EN_ATTENTE";
-            default -> "EN_ATTENTE";
+            case "ACCP" -> SwiftMessage.STATUS_ACCEPTED;
+            case "RJCT" -> SwiftMessage.STATUS_REJECTED;
+            case "PDNG" -> STATUS_PENDING;
+            default -> STATUS_PENDING;
         };
     }
 
@@ -536,15 +579,15 @@ public class SwiftParserService {
     private String extractIban(Element txInf, String accountTag) {
         Element acct = getFirstChildElement(txInf, accountTag);
         if (acct == null) return null;
-        Element id = getFirstChildElement(acct, "Id");
-        return id != null ? getChildText(id, "IBAN") : null;
+        Element id = getFirstChildElement(acct, XML_TAG_ID);
+        return id != null ? getChildText(id, XML_TAG_IBAN) : null;
     }
 
     private String extractBic(Element txInf, String agentTag) {
         Element agent = getFirstChildElement(txInf, agentTag);
         if (agent == null) return null;
-        Element fin = getFirstChildElement(agent, "FinInstnId");
-        return fin != null ? getChildText(fin, "BICFI") : null;
+        Element fin = getFirstChildElement(agent, TAG_FIN_INSTN_ID);
+        return fin != null ? getChildText(fin, TAG_BICFI) : null;
     }
 
     private Document parseXml(File xmlFile) throws Exception {

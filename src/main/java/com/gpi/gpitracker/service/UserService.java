@@ -5,6 +5,7 @@ import com.gpi.gpitracker.dto.UserCreateRequest;
 import com.gpi.gpitracker.entity.AppUser;
 import com.gpi.gpitracker.repository.AppUserRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,6 +14,7 @@ import java.time.format.TextStyle;
 import java.util.*;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UserService {
@@ -21,6 +23,16 @@ public class UserService {
     private final KeycloakAdminService keycloakAdminService;
     private final EmailService emailService;
     private final ActivityLogService activityLogService;
+
+    // ==================== CONSTANTES ====================
+    private static final String USER_NOT_FOUND = "Utilisateur non trouvé : ";
+    private static final String USER_ENTITY_TYPE = "USER";
+    private static final String ERROR_SAVE_DB = "Erreur base de données: ";
+
+    // Random réutilisable pour la génération de mots de passe
+    private final Random random = new Random();
+
+    // ==================== MÉTHODES DE LECTURE ====================
 
     public List<AppUser> getAllUsers() {
         return userRepository.findAll();
@@ -48,6 +60,8 @@ public class UserService {
         return userRepository.findByIban(iban);
     }
 
+    // ==================== GÉNÉRATION MOT DE PASSE ====================
+
     /**
      * Génère un mot de passe temporaire sécurisé
      */
@@ -59,7 +73,6 @@ public class UserService {
         String allChars = uppercase + lowercase + numbers + special;
 
         StringBuilder password = new StringBuilder();
-        Random random = new Random();
 
         // Au moins 1 caractère de chaque catégorie
         password.append(uppercase.charAt(random.nextInt(uppercase.length())));
@@ -84,40 +97,42 @@ public class UserService {
         return new String(chars);
     }
 
+    // ==================== CRÉATION UTILISATEUR ====================
+
     @Transactional
     public AppUser createUser(UserCreateRequest request) {
         // Vérifications existantes
         if (userRepository.findByEmail(request.getEmail()).isPresent()) {
-            throw new RuntimeException("Email déjà utilisé : " + request.getEmail());
+            throw new IllegalArgumentException("Email déjà utilisé : " + request.getEmail());
         }
 
         if (userRepository.findByUsername(request.getUsername()).isPresent()) {
-            throw new RuntimeException("Nom d'utilisateur déjà utilisé : " + request.getUsername());
+            throw new IllegalArgumentException("Nom d'utilisateur déjà utilisé : " + request.getUsername());
         }
 
         // Vérifier si l'IBAN existe déjà (pour les clients)
         if (request.getIban() != null && !request.getIban().isBlank()) {
             if (userRepository.findByIban(request.getIban()).isPresent()) {
-                throw new RuntimeException("IBAN déjà utilisé par un autre client");
+                throw new IllegalArgumentException("IBAN déjà utilisé par un autre client");
             }
         }
 
-        // ✅ GÉNÉRER UN MOT DE PASSE TEMPORAIRE AUTOMATIQUEMENT
+        // Générer un mot de passe temporaire automatiquement
         String temporaryPassword = generateTemporaryPassword();
-        System.out.println("=== Mot de passe temporaire généré pour: " + request.getEmail());
-        System.out.println("=== Mot de passe: " + temporaryPassword);
+        log.info("=== Mot de passe temporaire généré pour: {}", request.getEmail());
 
-        // ✅ Utiliser le mot de passe généré pour Keycloak (IGNORER celui du frontend)
+        // Utiliser le mot de passe généré pour Keycloak
         String keycloakId = keycloakAdminService.createUser(
                 request.getUsername(),
                 request.getEmail(),
                 request.getFirstName(),
                 request.getLastName(),
-                temporaryPassword,  // ← Utiliser le mot de passe généré
-                request.getRole()
+                temporaryPassword,
+                request.getRole(),
+                request.getPhone()
         );
 
-        System.out.println("=== KEYCLOAK OK, keycloakId: " + keycloakId);
+        log.info("=== KEYCLOAK OK, keycloakId: {}", keycloakId);
 
         AppUser user = new AppUser();
         user.setKeycloakId(keycloakId);
@@ -135,20 +150,24 @@ public class UserService {
         user.setCountry(request.getCountry());
         user.setIban(request.getIban());
 
-        System.out.println("=== AVANT SAVE: " + user.getUsername());
+        log.debug("=== AVANT SAVE: {}", user.getUsername());
 
         AppUser saved;
         try {
             saved = userRepository.save(user);
-            System.out.println("=== SAVE OK, id: " + saved.getId());
+            log.info("=== SAVE OK, id: {}", saved.getId());
         } catch (Exception e) {
-            System.err.println("=== ERREUR SAVE DB: " + e.getMessage());
-            e.printStackTrace();
-            keycloakAdminService.deleteUser(keycloakId);
-            throw new RuntimeException("Erreur base de données: " + e.getMessage());
+            log.error("=== ERREUR SAVE DB: {}", e.getMessage(), e);
+            // Rollback Keycloak en cas d'erreur DB
+            try {
+                keycloakAdminService.deleteUser(keycloakId);
+            } catch (Exception ex) {
+                log.warn("Erreur lors du rollback Keycloak: {}", ex.getMessage());
+            }
+            throw new IllegalStateException(ERROR_SAVE_DB + e.getMessage(), e);
         }
 
-        // ✅ Envoyer l'email avec le mot de passe GÉNÉRÉ (pas celui du frontend)
+        // Envoyer l'email avec le mot de passe généré
         try {
             String firstName = (request.getFirstName() != null && !request.getFirstName().isBlank())
                     ? request.getFirstName()
@@ -158,15 +177,15 @@ public class UserService {
                     request.getEmail(),
                     firstName,
                     request.getUsername(),
-                    temporaryPassword  // ← Utiliser le mot de passe généré
+                    temporaryPassword
             );
-            System.out.println("=== EMAIL OK avec mot de passe généré");
+            log.info("=== EMAIL OK avec mot de passe généré");
         } catch (Exception e) {
-            System.err.println("=== ERREUR EMAIL (non bloquant): " + e.getMessage());
+            log.error("=== ERREUR EMAIL (non bloquant): {}", e.getMessage());
         }
 
         activityLogService.log(
-                "CREATE", "USER", saved.getId(),
+                "CREATE", USER_ENTITY_TYPE, saved.getId(),
                 "Utilisateur " + saved.getUsername() +
                         " créé avec le rôle " + saved.getRole()
         );
@@ -174,10 +193,15 @@ public class UserService {
         return saved;
     }
 
+    // ==================== MISE À JOUR UTILISATEUR ====================
+
     @Transactional
     public AppUser updateUser(String id, AppUser userDetails) {
         AppUser user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé : " + id));
+                .orElseThrow(() -> new IllegalArgumentException(USER_NOT_FOUND + id));
+
+        String oldUsername = user.getUsername();
+        String oldEmail = user.getEmail();
 
         user.setUsername(userDetails.getUsername());
         user.setEmail(userDetails.getEmail());
@@ -192,46 +216,59 @@ public class UserService {
         if (userDetails.getPostalCode() != null) user.setPostalCode(userDetails.getPostalCode());
         if (userDetails.getCountry() != null) user.setCountry(userDetails.getCountry());
 
-        // ⚠️ NE PAS MODIFIER L'IBAN EN MODIFICATION (sécurité)
-        // L'IBAN ne peut être modifié que si c'est explicitement autorisé
-        // Pour plus de sécurité, on ignore l'IBAN dans updateUser
-
         // Mise à jour du statut
         if (userDetails.getActif() != null) user.setActif(userDetails.getActif());
 
         // Mise à jour dans Keycloak (sans changer le mot de passe)
-        keycloakAdminService.updateUser(
-                user.getKeycloakId(),
-                userDetails.getUsername(),
-                userDetails.getEmail(),
-                userDetails.getFirstName(),
-                userDetails.getLastName()
-        );
+        try {
+            keycloakAdminService.updateUser(
+                    user.getKeycloakId(),
+                    userDetails.getUsername(),
+                    userDetails.getEmail(),
+                    userDetails.getFirstName(),
+                    userDetails.getLastName(),
+                    userDetails.getPhone()
+            );
+            log.info("Utilisateur Keycloak mis à jour: {}", user.getKeycloakId());
+        } catch (Exception e) {
+            log.error("Erreur lors de la mise à jour Keycloak: {}", e.getMessage());
+            // On continue car l'utilisateur local peut être mis à jour quand même
+        }
 
         AppUser updated = userRepository.save(user);
 
         activityLogService.log(
-                "UPDATE", "USER", id,
-                "Utilisateur " + updated.getUsername() + " modifié"
+                "UPDATE", USER_ENTITY_TYPE, id,
+                "Utilisateur " + oldUsername + " → " + updated.getUsername() + " modifié"
         );
 
         return updated;
     }
 
+    // ==================== CHANGEMENT DE STATUT ====================
+
     @Transactional
     public AppUser toggleUserStatus(String id) {
         AppUser user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé : " + id));
+                .orElseThrow(() -> new IllegalArgumentException(USER_NOT_FOUND + id));
         int newStatus = user.getActif() == 1 ? 0 : 1;
         user.setActif(newStatus);
-        keycloakAdminService.updateUserStatus(
-                user.getKeycloakId(), newStatus == 1
-        );
+
+        try {
+            keycloakAdminService.updateUserStatus(
+                    user.getKeycloakId(), newStatus == 1
+            );
+            log.info("Statut Keycloak mis à jour: {} -> {}", user.getUsername(), newStatus == 1 ? "actif" : "inactif");
+        } catch (Exception e) {
+            log.error("Erreur lors de la mise à jour du statut Keycloak: {}", e.getMessage());
+            // On continue car l'utilisateur local peut être mis à jour quand même
+        }
+
         AppUser updated = userRepository.save(user);
 
         activityLogService.log(
                 newStatus == 1 ? "ACTIVATE" : "DEACTIVATE",
-                "USER", id,
+                USER_ENTITY_TYPE, id,
                 "Utilisateur " + updated.getUsername() +
                         (newStatus == 1 ? " activé" : " désactivé")
         );
@@ -239,19 +276,60 @@ public class UserService {
         return updated;
     }
 
+    // ==================== SUPPRESSION UTILISATEUR (CORRIGÉE) ====================
+
     @Transactional
     public void deleteUser(String id) {
         AppUser user = userRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Utilisateur non trouvé : " + id));
+                .orElseThrow(() -> new IllegalArgumentException(USER_NOT_FOUND + id));
 
+        String username = user.getUsername();
+        String keycloakId = user.getKeycloakId();
+
+        log.info("=== SUPPRESSION UTILISATEUR: {} (keycloakId: {})", username, keycloakId);
+
+        // 1. Supprimer d'abord de la base de données locale
+        try {
+            userRepository.deleteById(id);
+            log.info("✅ Utilisateur supprimé de la base locale: {}", username);
+        } catch (Exception e) {
+            log.error("❌ Erreur lors de la suppression locale: {}", e.getMessage());
+            throw new IllegalStateException("Impossible de supprimer l'utilisateur de la base: " + e.getMessage(), e);
+        }
+
+        // 2. Essayer de supprimer de Keycloak (non bloquant)
+        if (keycloakId != null && !keycloakId.isBlank()) {
+            try {
+                keycloakAdminService.deleteUser(keycloakId);
+                log.info("✅ Utilisateur Keycloak supprimé: {}", keycloakId);
+            } catch (Exception e) {
+                // L'utilisateur est déjà supprimé ou n'existe pas - ce n'est pas bloquant
+                String errorMsg = e.getMessage();
+                if (errorMsg != null && (errorMsg.contains("404") ||
+                        errorMsg.contains("Not Found") ||
+                        errorMsg.contains("not found") ||
+                        errorMsg.contains("does not exist"))) {
+                    log.warn("⚠️ L'utilisateur Keycloak n'existait pas déjà: {}", keycloakId);
+                } else {
+                    log.error("⚠️ Erreur non bloquante lors de la suppression Keycloak: {}", e.getMessage());
+                }
+                // On ne relance pas l'exception car l'utilisateur local est déjà supprimé
+            }
+        } else {
+            log.warn("⚠️ Aucun keycloakId pour l'utilisateur: {}", username);
+        }
+
+        // 3. Logger l'action
         activityLogService.log(
-                "DELETE", "USER", id,
-                "Utilisateur " + user.getUsername() + " supprimé"
+                "DELETE", USER_ENTITY_TYPE, id,
+                "Utilisateur " + username + " supprimé" +
+                        (keycloakId != null ? " (Keycloak: " + keycloakId + ")" : "")
         );
 
-        keycloakAdminService.deleteUser(user.getKeycloakId());
-        userRepository.deleteById(id);
+        log.info("=== SUPPRESSION TERMINÉE: {}", username);
     }
+
+    // ==================== STATISTIQUES DASHBOARD ====================
 
     public DashboardStats getDashboardStats() {
         List<AppUser> allUsers = userRepository.findAll();
@@ -270,7 +348,7 @@ public class UserService {
                 .filter(u -> u.getDateCreation() != null)
                 .sorted((a, b) -> b.getDateCreation().compareTo(a.getDateCreation()))
                 .limit(5)
-                .collect(Collectors.toList()));
+                .toList());
 
         Map<String, Long> registrationsByMonth = new LinkedHashMap<>();
         for (int i = 5; i >= 0; i--) {

@@ -37,6 +37,16 @@ public class AgentMessageController {
     private final EmailService emailService;
     private final NotificationService notificationService;
 
+    // ==================== CONSTANTES ====================
+    private static final String STATUS_ACCEPTED = "ACCEPTE";
+    private static final String STATUS_REJECTED = "REJETE";
+    private static final String STATUS_PENDING = "EN_ATTENTE";
+    private static final String ENTITY_TYPE_TRANSACTION = "TRANSACTION";
+    private static final String MESSAGE_TYPE_PACS008 = "PACS008";
+    private static final String MESSAGE_TYPE_PACS009 = "PACS009";
+    private static final String DECISION_ACCEPT = "ACCP";
+    private static final String DECISION_REJECT = "RJCT";
+
     private String getCurrentUsername() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
 
@@ -70,7 +80,7 @@ public class AgentMessageController {
 
         SwiftMessage message = new SwiftMessage();
 
-        message.setMessageType("PACS008");
+        message.setMessageType(MESSAGE_TYPE_PACS008);
         message.setMsgId("MSG_" + System.currentTimeMillis());
         message.setInstructionId(message.getMsgId());
         message.setEndToEndId(message.getMsgId());
@@ -87,7 +97,7 @@ public class AgentMessageController {
 
         activityLogService.log(
                 "EMISSION",
-                "TRANSACTION",
+                ENTITY_TYPE_TRANSACTION,
                 String.valueOf(message.getId()),
                 "Émission PACS008 : " + message.getMsgId()
         );
@@ -101,48 +111,50 @@ public class AgentMessageController {
                                                      @RequestBody ConfirmationRequest request) {
 
         SwiftMessage original = messageRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Transaction non trouvée : " + id));
+                .orElseThrow(() -> new IllegalArgumentException("Transaction non trouvée : " + id));
 
         String username = getCurrentUsername();
 
-        if (!"PACS008".equals(original.getMessageType()) &&
-                !"PACS009".equals(original.getMessageType())) {
-            throw new RuntimeException("Seuls les messages PACS008/PACS009 peuvent être traités.");
+        if (!MESSAGE_TYPE_PACS008.equals(original.getMessageType()) &&
+                !MESSAGE_TYPE_PACS009.equals(original.getMessageType())) {
+            throw new IllegalArgumentException("Seuls les messages PACS008/PACS009 peuvent être traités.");
         }
 
-        if (!"PDNG".equals(original.getStatus())) {
-            throw new RuntimeException("Cette transaction est déjà traitée. Statut actuel : " + original.getStatus());
+        if (!"EN_ATTENTE".equals(original.getStatus()) &&
+                !"ENVOYE".equals(original.getStatus()) &&
+                !"PDNG".equals(original.getStatus())) {
+            throw new IllegalStateException("Cette transaction est déjà traitée. Statut actuel : " + original.getStatus());
         }
 
         SwiftMessageSender.Pacs002Result result;
 
-        if ("ACCP".equals(request.getStatus())) {
+        if (DECISION_ACCEPT.equals(request.getStatus())) {
 
-            original.setStatus("ACCEPTE");
+            original.setStatus(STATUS_ACCEPTED);
             original.setAgentValidated(true);
             original.setValidatedAt(LocalDateTime.now());
             original.setValidatedBy(username);
 
             messageRepository.save(original);
 
-            result = messageSender.generatePacs002(original, "ACCP", null);
+            result = messageSender.generatePacs002(original, DECISION_ACCEPT, null);
 
-            notifyClient(original, "ACCEPTE");
+            notifyClient(original, STATUS_ACCEPTED);
 
             activityLogService.log(
                     "ACCEPTE",
-                    "TRANSACTION",
+                    ENTITY_TYPE_TRANSACTION,
                     String.valueOf(original.getId()),
                     "Transaction " + original.getMsgId() + " acceptée par " + username
             );
 
-        } else if ("RJCT".equals(request.getStatus())) {
+        } else if (DECISION_REJECT.equals(request.getStatus())) {
 
             if (request.getMotif() == null || request.getMotif().isBlank()) {
-                throw new RuntimeException("Le motif de rejet est obligatoire.");
+                throw new IllegalArgumentException("Le motif de rejet est obligatoire.");
             }
 
-            original.setStatus("REJETE");
+            original.setStatus(STATUS_REJECTED);
             original.setRejectionReason(request.getMotif());
             original.setAgentValidated(false);
             original.setValidatedAt(LocalDateTime.now());
@@ -150,19 +162,19 @@ public class AgentMessageController {
 
             messageRepository.save(original);
 
-            result = messageSender.generatePacs002(original, "RJCT", request.getMotif());
+            result = messageSender.generatePacs002(original, DECISION_REJECT, request.getMotif());
 
-            notifyClient(original, "REJETE");
+            notifyClient(original, STATUS_REJECTED);
 
             activityLogService.log(
                     "REJETE",
-                    "TRANSACTION",
+                    ENTITY_TYPE_TRANSACTION,
                     String.valueOf(original.getId()),
                     "Transaction " + original.getMsgId() + " rejetée par " + username
             );
 
         } else {
-            throw new RuntimeException("Statut invalide. Utilisez ACCP ou RJCT.");
+            throw new IllegalArgumentException("Statut invalide. Utilisez ACCP ou RJCT.");
         }
 
         return xmlResponse(result.getXml(), result.getFileName());
@@ -174,10 +186,10 @@ public class AgentMessageController {
                                                       @RequestBody CancellationRequest request) {
 
         SwiftMessage original = messageRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Transaction non trouvée : " + id));
+                .orElseThrow(() -> new IllegalArgumentException("Transaction non trouvée : " + id));
 
-        if (!"ACCEPTE".equals(original.getStatus())) {
-            throw new RuntimeException("L'annulation est possible seulement pour une transaction acceptée.");
+        if (!STATUS_ACCEPTED.equals(original.getStatus())) {
+            throw new IllegalStateException("L'annulation est possible seulement pour une transaction acceptée.");
         }
 
         SwiftMessageSender.Camt056Result result = messageSender.generateCamt056(
@@ -191,7 +203,7 @@ public class AgentMessageController {
 
         activityLogService.log(
                 "CAMT056",
-                "TRANSACTION",
+                ENTITY_TYPE_TRANSACTION,
                 String.valueOf(original.getId()),
                 "Demande d'annulation CAMT.056 pour " + original.getMsgId()
         );
@@ -206,7 +218,7 @@ public class AgentMessageController {
         }
 
         try {
-            if ("ACCEPTE".equals(type)) {
+            if (STATUS_ACCEPTED.equals(type)) {
 
                 emailService.sendTransactionAcceptedByAgentEmail(
                         message.getClientEmail(),
@@ -224,7 +236,7 @@ public class AgentMessageController {
                         message.getUetr()
                 );
 
-            } else if ("REJETE".equals(type)) {
+            } else if (STATUS_REJECTED.equals(type)) {
 
                 emailService.sendTransactionRejectedEmailSync(
                         message.getClientEmail(),
@@ -263,6 +275,7 @@ public class AgentMessageController {
                 .contentType(MediaType.APPLICATION_XML)
                 .body(xml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
+
     /**
      * Répondre à une demande d'annulation CAMT.056 reçue
      * Génère un CAMT.029 en réponse
@@ -275,14 +288,14 @@ public class AgentMessageController {
 
         // 1. Récupérer le CAMT.056 reçu
         SwiftMessage camt056 = messageRepository.findById(camt056Id)
-                .orElseThrow(() -> new RuntimeException("CAMT.056 non trouvé : " + camt056Id));
+                .orElseThrow(() -> new IllegalArgumentException("CAMT.056 non trouvé : " + camt056Id));
 
         // 2. Vérifier que c'est bien un CAMT.056 entrant
         if (!"CAMT056".equals(camt056.getMessageType())) {
-            throw new RuntimeException("Le message n'est pas un CAMT.056");
+            throw new IllegalArgumentException("Le message n'est pas un CAMT.056");
         }
         if (!"IN".equals(camt056.getDirection())) {
-            throw new RuntimeException("Ce message n'est pas un CAMT.056 entrant");
+            throw new IllegalArgumentException("Ce message n'est pas un CAMT.056 entrant");
         }
 
         // 3. Récupérer la transaction originale (celle à annuler)
@@ -292,7 +305,7 @@ public class AgentMessageController {
         }
 
         if (originalTransaction == null) {
-            throw new RuntimeException("Transaction originale non trouvée pour UETR: " + camt056.getOriginalUetr());
+            throw new IllegalArgumentException("Transaction originale non trouvée pour UETR: " + camt056.getOriginalUetr());
         }
 
         String username = getCurrentUsername();
