@@ -7,11 +7,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.w3c.dom.Document;
 
-import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.File;
 import java.time.LocalDateTime;
+import org.w3c.dom.Document;
 
 @Slf4j
 @Service
@@ -22,7 +21,18 @@ public class SwiftFileWatcherService {
     private final FileArchiveService archiveService;
     private final SwiftMessageRepository swiftMessageRepository;
     private final SwiftValidationService validationService;
-    private final XmlValidationService xmlValidationService;  // NOUVEAU
+    private final XmlValidationService xmlValidationService;
+
+    // ==================== CONSTANTES ====================
+    private static final String MSG_TYPE_PACS008 = "PACS008";
+    private static final String MSG_TYPE_PACS009 = "PACS009";
+    private static final String MSG_TYPE_PACS002 = "PACS002";
+    private static final String MSG_TYPE_CAMT056 = "CAMT056";
+    private static final String MSG_TYPE_CAMT029 = "CAMT029";
+    private static final String DIRECTION_IN = "IN";
+    private static final String DIRECTION_OUT = "OUT";
+    private static final String STATUS_PENDING = "PDNG";
+    private static final String STATUS_SENT = "ENVOYE";
 
     @Value("${swift.received.path}")
     private String receivedPath;
@@ -58,10 +68,8 @@ public class SwiftFileWatcherService {
 
     private void processReceivedFile(File xmlFile) {
         try {
-            // Détecter d'abord le type pour validation XSD
             String detectedType = detectMessageTypeQuick(xmlFile);
 
-            // Valider selon le type détecté
             if (!validateXmlFileWithXsd(xmlFile, detectedType)) {
                 log.error("Validation XSD échouée pour {}", xmlFile.getName());
                 archiveService.archiveReceivedFile(xmlFile.getName());
@@ -76,12 +84,11 @@ public class SwiftFileWatcherService {
                 return;
             }
 
-            message.setDirection("IN");
-            if ("PACS008".equals(message.getMessageType()) || "PACS009".equals(message.getMessageType())) {
-                message.setStatus("PDNG");
+            message.setDirection(DIRECTION_IN);
+            if (MSG_TYPE_PACS008.equals(message.getMessageType()) || MSG_TYPE_PACS009.equals(message.getMessageType())) {
+                message.setStatus(STATUS_PENDING);
 
-                SwiftValidationService.EvaluationResult eval =
-                        validationService.evaluerTransaction(message);
+                SwiftValidationService.EvaluationResult eval = validationService.evaluerTransaction(message);
                 message.setAlerte(eval.getAlerte());
                 message.setMotifAlerte(eval.getMotif());
             }
@@ -102,10 +109,8 @@ public class SwiftFileWatcherService {
 
     private void processEmittedFile(File xmlFile) {
         try {
-            // Détecter d'abord le type pour validation XSD
             String detectedType = detectMessageTypeQuick(xmlFile);
 
-            // Valider selon le type détecté
             if (!validateXmlFileWithXsd(xmlFile, detectedType)) {
                 log.error("Validation XSD échouée pour {}", xmlFile.getName());
                 archiveService.archiveEmittedFile(xmlFile.getName());
@@ -120,8 +125,8 @@ public class SwiftFileWatcherService {
                 return;
             }
 
-            message.setDirection("OUT");
-            message.setStatus("ENVOYE");
+            message.setDirection(DIRECTION_OUT);
+            message.setStatus(STATUS_SENT);
             message.setReceivedAt(LocalDateTime.now());
             message.setFileName(xmlFile.getName());
             swiftMessageRepository.save(message);
@@ -152,10 +157,10 @@ public class SwiftFileWatcherService {
             return XmlValidationService.TYPE_CAMT029;
         }
         if (fileName.contains("pacs.008") || fileName.contains("pacs008") || fileName.contains("008")) {
-            return "PACS008";
+            return MSG_TYPE_PACS008;
         }
         if (fileName.contains("pacs.009") || fileName.contains("pacs009") || fileName.contains("009")) {
-            return "PACS009";
+            return MSG_TYPE_PACS009;
         }
 
         return "UNKNOWN";
@@ -171,7 +176,6 @@ public class SwiftFileWatcherService {
                 return false;
             }
 
-            // Utiliser le service de validation XSD
             boolean isValid = xmlValidationService.validateXmlFile(xmlFile, messageType);
 
             if (!isValid) {
@@ -184,52 +188,6 @@ public class SwiftFileWatcherService {
             log.error("Erreur validation XML {} : {}", xmlFile.getName(), e.getMessage());
             return false;
         }
-    }
-
-    // Méthode conservée pour compatibilité (utilisée par d'autres classes)
-    private boolean validateXmlFile(File xmlFile) {
-        String type = detectMessageTypeQuick(xmlFile);
-        return validateXmlFileWithXsd(xmlFile, type);
-    }
-
-    private String detectType(String fileName, Document doc) {
-        if (fileName.contains("008")) return "PACS008";
-        if (fileName.contains("009")) return "PACS009";
-        if (fileName.contains("002")) return "PACS002";
-        if (fileName.contains("056")) return "CAMT056";
-        if (fileName.contains("029")) return "CAMT029";
-
-        if (doc != null) {
-            String namespace = doc.getDocumentElement().getNamespaceURI();
-            if (namespace == null) namespace = "";
-
-            if (namespace.contains("pacs.008")) return "PACS008";
-            if (namespace.contains("pacs.009")) return "PACS009";
-            if (namespace.contains("pacs.002")) return "PACS002";
-            if (namespace.contains("camt.056")) return "CAMT056";
-            if (namespace.contains("camt.029")) return "CAMT029";
-        }
-
-        return "UNKNOWN";
-    }
-
-    private boolean validateByType(Document doc, String type, String fileName) {
-        return switch (type) {
-            case "PACS008", "PACS009" -> has(doc, "MsgId", fileName) && has(doc, "CreDtTm", fileName) &&
-                    (doc.getElementsByTagName("InstdAmt").getLength() > 0 ||
-                            doc.getElementsByTagName("IntrBkSttlmAmt").getLength() > 0);
-            case "PACS002" -> has(doc, "MsgId", fileName) &&
-                    (doc.getElementsByTagName("GrpSts").getLength() > 0 ||
-                            doc.getElementsByTagName("TxSts").getLength() > 0);
-            case "CAMT056" -> has(doc, "Assgnmt", fileName) && has(doc, "OrgnlUETR", fileName);
-            case "CAMT029" -> has(doc, "Assgnmt", fileName) && has(doc, "OrgnlUETR", fileName) &&
-                    (doc.getElementsByTagName("Conf").getLength() > 0 ||
-                            doc.getElementsByTagName("TxCxlSts").getLength() > 0);
-            default -> {
-                log.error("Type non supporté : {}", type);
-                yield false;
-            }
-        };
     }
 
     private boolean has(Document doc, String tag, String fileName) {

@@ -20,26 +20,45 @@ public class AgentValidationService {
     private final KeycloakAdminService keycloakAdminService;
     private final NotificationService notificationService;
 
+    private static final String STATUS_PENDING = SwiftMessage.STATUS_PENDING; // EN_ATTENTE
+    private static final String STATUS_ACCEPTED = SwiftMessage.STATUS_ACCEPTED; // ACCEPTE
+    private static final String STATUS_REJECTED = SwiftMessage.STATUS_REJECTED; // REJETE
+
     public String normalizeStatus(String status) {
-        if (status == null || status.isBlank()) return "PDNG";
-        switch (status.toUpperCase()) {
-            case "EN_ATTENTE": case "PDNG": case "SIGNALE": return "PDNG";
-            case "ACTC": return "ACTC";
-            case "ACSP": return "ACSP";
-            case "ACCP": case "ACCEPTE": case "ACTIVE": case "VALIDATED": case "ACSC": return "ACSC";
-            case "RJCT": case "REJETE": case "REJETE_AUTO": return "RJCT";
-            default: return status.toUpperCase();
+        if (status == null || status.isBlank()) {
+            return STATUS_PENDING;
         }
+
+        String upperStatus = status.trim().toUpperCase();
+
+        if (upperStatus.equals("EN_ATTENTE") || upperStatus.equals("SIGNALE")) {
+            return STATUS_PENDING;
+        }
+
+        if (upperStatus.equals("ACCEPTE") || upperStatus.equals("ACCP")
+                || upperStatus.equals("ACTIVE") || upperStatus.equals("VALIDATED")) {
+            return STATUS_ACCEPTED;
+        }
+
+        if (upperStatus.equals("REJETE") || upperStatus.equals("RJCT")
+                || upperStatus.equals("REJETE_AUTO")) {
+            return STATUS_REJECTED;
+        }
+
+        return STATUS_PENDING;
     }
 
     @Transactional
     public SwiftMessage acceptTransaction(Long id, String validatedBy) {
         SwiftMessage message = swiftMessageRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Transaction non trouvée: " + id));
+                .orElseThrow(() -> new IllegalArgumentException("Transaction non trouvée: " + id));
 
-        log.info(" ACCEPTATION: Transaction {} acceptée par {}", message.getMsgId(), validatedBy);
+        if (!STATUS_PENDING.equals(message.getStatus())) {
+            throw new IllegalStateException("Cette transaction est déjà traitée. Statut actuel : " + message.getStatus());
+        }
 
-        // Récupération email si null
+        log.info("✅ ACCEPTATION: Transaction {} acceptée par {}", message.getMsgId(), validatedBy);
+
         if (message.getClientEmail() == null || message.getClientEmail().isBlank()) {
             String debtorName = message.getDebtorName();
             if (debtorName != null && !debtorName.isBlank()) {
@@ -51,14 +70,13 @@ public class AgentValidationService {
             }
         }
 
-        // ⭐ SIMPLIFICATION: Statut passe directement à ACCEPTE
-        message.setStatus("ACCEPTE");
+        message.setStatus(STATUS_ACCEPTED);
         message.setAgentValidated(true);
         message.setValidatedAt(LocalDateTime.now());
         message.setValidatedBy(validatedBy);
+
         swiftMessageRepository.save(message);
 
-        // Notification au client
         if (message.getClientEmail() != null && !message.getClientEmail().isBlank()) {
             try {
                 emailService.sendTransactionAcceptedEmailSync(
@@ -68,14 +86,13 @@ public class AgentValidationService {
                         message.getAmount(),
                         message.getCurrency()
                 );
-                log.info(" Email acceptation envoyé");
             } catch (Exception e) {
-                log.error(" Erreur email: {}", e.getMessage());
+                log.error("❌ Erreur email acceptation: {}", e.getMessage());
             }
 
             notificationService.createNotification(
                     message.getClientEmail(),
-                    " Transaction acceptée",
+                    "✅ Transaction acceptée",
                     "Votre transaction a été acceptée avec succès.",
                     "success",
                     message.getUetr()
@@ -95,32 +112,37 @@ public class AgentValidationService {
     @Transactional
     public SwiftMessage rejectTransaction(Long id, String motif, String rejectedBy) {
         SwiftMessage message = swiftMessageRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Transaction non trouvée: " + id));
+                .orElseThrow(() -> new IllegalArgumentException("Transaction non trouvée: " + id));
 
-        log.info(" REJET: Transaction {} rejetée par {}", message.getMsgId(), rejectedBy);
-        log.info("   Motif: {}", motif);
+        if (!STATUS_PENDING.equals(message.getStatus())) {
+            throw new IllegalStateException("Cette transaction est déjà traitée. Statut actuel : " + message.getStatus());
+        }
 
-        // Récupération email si null
+        if (motif == null || motif.isBlank()) {
+            throw new IllegalArgumentException("Le motif de rejet est obligatoire.");
+        }
+
+        log.info("❌ REJET: Transaction {} rejetée par {}", message.getMsgId(), rejectedBy);
+
         if (message.getClientEmail() == null || message.getClientEmail().isBlank()) {
             String debtorName = message.getDebtorName();
             if (debtorName != null && !debtorName.isBlank()) {
                 String email = keycloakAdminService.getEmailByFullName(debtorName);
                 if (email != null) {
                     message.setClientEmail(email);
-                    log.info(" Email récupéré: {}", email);
+                    log.info("Email récupéré: {}", email);
                 }
             }
         }
 
-        // ⭐ SIMPLIFICATION: Statut passe directement à REJETE
-        message.setStatus("REJETE");
+        message.setStatus(STATUS_REJECTED);
         message.setRejectionReason(motif);
-        message.setAgentValidated(true);
+        message.setAgentValidated(false);
         message.setValidatedAt(LocalDateTime.now());
         message.setValidatedBy(rejectedBy);
+
         swiftMessageRepository.save(message);
 
-        // Notification au client avec le motif
         if (message.getClientEmail() != null && !message.getClientEmail().isBlank()) {
             try {
                 emailService.sendTransactionRejectedEmailSync(
@@ -129,14 +151,13 @@ public class AgentValidationService {
                         message.getUetr(),
                         motif
                 );
-                log.info("Email rejet envoyé");
             } catch (Exception e) {
-                log.error(" Erreur email: {}", e.getMessage());
+                log.error("❌ Erreur email rejet: {}", e.getMessage());
             }
 
             notificationService.createNotification(
                     message.getClientEmail(),
-                    " Transaction rejetée",
+                    "❌ Transaction rejetée",
                     "Votre transaction a été rejetée. Motif: " + motif,
                     "error",
                     message.getUetr()
@@ -154,18 +175,16 @@ public class AgentValidationService {
     }
 
     public boolean needsAgentAction(String status) {
-        String normalized = normalizeStatus(status);
-        return "PDNG".equals(normalized);
+        return STATUS_PENDING.equals(normalizeStatus(status));
     }
 
     public String getStatusLabel(String status) {
-        switch (normalizeStatus(status)) {
-            case "PDNG": return "En attente";
-            case "ACTC": return "Validation technique";
-            case "ACSP": return "En traitement";
-            case "ACSC": return "Finalisé";
-            case "RJCT": return "Rejeté";
-            default: return status;
-        }
+        String normalized = normalizeStatus(status);
+
+        if (STATUS_PENDING.equals(normalized)) return "En attente";
+        if (STATUS_ACCEPTED.equals(normalized)) return "Accepté";
+        if (STATUS_REJECTED.equals(normalized)) return "Rejeté";
+
+        return status;
     }
 }

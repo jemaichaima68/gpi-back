@@ -50,7 +50,7 @@ public class SecurityConfig {
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
 
-        converter.setJwtGrantedAuthoritiesConverter((Jwt jwt) -> {
+        converter.setJwtGrantedAuthoritiesConverter(jwt -> {
             Map<String, Object> realmAccess = jwt.getClaim("realm_access");
 
             if (realmAccess == null || !realmAccess.containsKey("roles")) {
@@ -60,11 +60,9 @@ public class SecurityConfig {
             @SuppressWarnings("unchecked")
             List<String> roles = (List<String>) realmAccess.get("roles");
 
-            Collection<GrantedAuthority> authorities = roles.stream()
+            return roles.stream()
                     .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
                     .collect(Collectors.toList());
-
-            return authorities;
         });
 
         return converter;

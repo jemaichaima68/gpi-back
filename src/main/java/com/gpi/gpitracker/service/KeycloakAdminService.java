@@ -54,7 +54,7 @@ public class KeycloakAdminService {
         return allRoles.stream()
                 .filter(r -> r.getName().equalsIgnoreCase(roleName))
                 .findFirst()
-                .orElseThrow(() -> new RuntimeException(
+                .orElseThrow(() -> new IllegalArgumentException(
                         "Rôle introuvable dans Keycloak : " + roleName));
     }
 
@@ -101,29 +101,29 @@ public class KeycloakAdminService {
             credential.setTemporary(true);
             user.setCredentials(Collections.singletonList(credential));
 
-            Response response = users.create(user);
+            try (Response response = users.create(user)) {
+                if (response.getStatus() == 409) {
+                    throw new IllegalArgumentException(
+                            "Ce nom d'utilisateur ou email existe déjà dans Keycloak"
+                    );
+                }
 
-            if (response.getStatus() == 409) {
-                throw new RuntimeException(
-                        "Ce nom d'utilisateur ou email existe déjà dans Keycloak"
-                );
+                if (response.getStatus() != 201) {
+                    throw new IllegalStateException(
+                            "Erreur création Keycloak: " + response.getStatus()
+                    );
+                }
+
+                String path = response.getLocation().getPath();
+                String keycloakId = path.substring(path.lastIndexOf('/') + 1);
+
+                // Assign role — insensible à la casse
+                RoleRepresentation roleRep = findRoleIgnoreCase(realm, role);
+                users.get(keycloakId).roles().realmLevel()
+                        .add(Collections.singletonList(roleRep));
+
+                return keycloakId;
             }
-
-            if (response.getStatus() != 201) {
-                throw new RuntimeException(
-                        "Erreur création Keycloak: " + response.getStatus()
-                );
-            }
-
-            String path = response.getLocation().getPath();
-            String keycloakId = path.substring(path.lastIndexOf('/') + 1);
-
-            // Assign role — insensible à la casse
-            RoleRepresentation roleRep = findRoleIgnoreCase(realm, role);
-            users.get(keycloakId).roles().realmLevel()
-                    .add(Collections.singletonList(roleRep));
-
-            return keycloakId;
         } finally {
             keycloak.close();
         }
@@ -209,7 +209,7 @@ public class KeycloakAdminService {
             CredentialRepresentation credential = new CredentialRepresentation();
             credential.setType(CredentialRepresentation.PASSWORD);
             credential.setValue(newPassword);
-            credential.setTemporary(true);
+            credential.setTemporary(temporary);
 
             keycloak.realm(targetRealm).users()
                     .get(keycloakId).resetPassword(credential);
@@ -326,7 +326,7 @@ public class KeycloakAdminService {
             if (!results.isEmpty()) {
                 String email = results.get(0).getEmail();
                 if (email != null && !email.isBlank()) {
-                    log.info("✅ Email trouvé par recherche: {} -> {}", fullName, email);
+                    log.info(" Email trouvé par recherche: {} -> {}", fullName, email);
                     return email;
                 }
             }
@@ -343,14 +343,14 @@ public class KeycloakAdminService {
                             lastName.equalsIgnoreCase(user.getLastName())) {
                         String email = user.getEmail();
                         if (email != null && !email.isBlank()) {
-                            log.info("✅ Email trouvé par prénom+nom: {} -> {}", fullName, email);
+                            log.info(" Email trouvé par prénom+nom: {} -> {}", fullName, email);
                             return email;
                         }
                     }
                 }
             }
 
-            log.warn("❌ Aucun email trouvé pour: {}", fullName);
+            log.warn(" Aucun email trouvé pour: {}", fullName);
             return null;
         } finally {
             keycloak.close();
