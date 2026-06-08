@@ -80,10 +80,10 @@ public class XmlValidationService {
             factory.setNamespaceAware(true);
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.newDocumentBuilder().parse(xmlFile);
-            log.info("✅ Validation basique réussie pour {}", xmlFile.getName());
+            log.info(" Validation basique réussie pour {}", xmlFile.getName());
             return true;
         } catch (Exception e) {
-            log.error("❌ Validation basique échouée pour {} : {}", xmlFile.getName(), e.getMessage());
+            log.error(" Validation basique échouée pour {} : {}", xmlFile.getName(), e.getMessage());
             return false;
         }
     }
@@ -110,13 +110,13 @@ public class XmlValidationService {
             Schema schema = getSchema(xsdPath);
             Validator validator = schema.newValidator();
             validator.validate(new StreamSource(xmlFile));
-            log.info("✅ Validation XSD réussie: {} contre {}", xmlFile.getName(), xsdPath);
+            log.info(" Validation XSD réussie: {} contre {}", xmlFile.getName(), xsdPath);
             return true;
         } catch (SAXException e) {
-            log.error("❌ Validation XSD échouée pour {} : {}", xmlFile.getName(), e.getMessage());
+            log.error(" Validation XSD échouée pour {} : {}", xmlFile.getName(), e.getMessage());
             return false;
         } catch (IOException e) {
-            log.error("❌ Erreur lecture fichier {} : {}", xmlFile.getName(), e.getMessage());
+            log.error(" Erreur lecture fichier {} : {}", xmlFile.getName(), e.getMessage());
             return false;
         }
     }
@@ -129,13 +129,13 @@ public class XmlValidationService {
             Schema schema = getSchema(xsdPath);
             Validator validator = schema.newValidator();
             validator.validate(new StreamSource(new StringReader(xmlContent)));
-            log.info("✅ Validation XSD string réussie contre {}", xsdPath);
+            log.info("Validation XSD string réussie contre {}", xsdPath);
             return true;
         } catch (SAXException e) {
-            log.error("❌ Validation XSD string échouée : {}", e.getMessage());
+            log.error(" Validation XSD string échouée : {}", e.getMessage());
             return false;
         } catch (IOException e) {
-            log.error("❌ Erreur lecture string XML : {}", e.getMessage());
+            log.error(" Erreur lecture string XML : {}", e.getMessage());
             return false;
         }
     }
@@ -159,10 +159,10 @@ public class XmlValidationService {
 
             Schema schema = factory.newSchema(new StreamSource(resource.getInputStream()));
             schemaCache.put(xsdPath, schema);
-            log.info("✅ Schéma XSD chargé: {}", xsdPath);
+            log.info(" Schéma XSD chargé: {}", xsdPath);
             return schema;
         } catch (IOException e) {
-            log.error("❌ Impossible de charger le XSD {} : {}", xsdPath, e.getMessage());
+            log.error(" Impossible de charger le XSD {} : {}", xsdPath, e.getMessage());
             throw new SAXException("XSD non trouvé: " + xsdPath, e);
         }
     }

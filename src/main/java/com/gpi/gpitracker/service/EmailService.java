@@ -39,9 +39,9 @@ public class EmailService {
             helper.setSubject("Bienvenue sur " + appName + " - Vos identifiants de connexion");
             helper.setText(buildWelcomeEmailHtml(firstName, username, password), true);
             mailSender.send(message);
-            log.info("✅ Email de bienvenue envoyé avec succès à {}", toEmail);
+            log.info(" Email de bienvenue envoyé avec succès à {}", toEmail);
         } catch (Exception e) {
-            log.error("❌ Erreur envoi email de bienvenue à {}: {}", toEmail, e.getMessage());
+            log.error(" Erreur envoi email de bienvenue à {}: {}", toEmail, e.getMessage());
         }
     }
 
@@ -56,9 +56,9 @@ public class EmailService {
             helper.setSubject(appName + " - Confirmation de reception de votre transaction SWIFT");
             helper.setText(buildTransactionReceivedHtml(clientName, uetr, amount, currency), true);
             mailSender.send(message);
-            log.info("✅ Email transaction reçue envoyé avec succès à {}", toEmail);
+            log.info(" Email transaction reçue envoyé avec succès à {}", toEmail);
         } catch (Exception e) {
-            log.error("❌ Erreur envoi email transaction reçue à {}: {}", toEmail, e.getMessage());
+            log.error(" Erreur envoi email transaction reçue à {}: {}", toEmail, e.getMessage());
             e.printStackTrace();
         }
     }
@@ -76,10 +76,10 @@ public class EmailService {
             helper.setSubject(appName + " - Confirmation de reception de votre transaction SWIFT");
             helper.setText(buildTransactionReceivedHtml(clientName, uetr, amount, currency), true);
             mailSender.send(message);
-            log.info("✅ Email transaction reçue envoyé avec succès à {}", toEmail);
+            log.info(" Email transaction reçue envoyé avec succès à {}", toEmail);
             return CompletableFuture.completedFuture(null);
         } catch (Exception e) {
-            log.error("❌ Erreur envoi email transaction reçue à {}: {}", toEmail, e.getMessage());
+            log.error(" Erreur envoi email transaction reçue à {}: {}", toEmail, e.getMessage());
             CompletableFuture<Void> failure = new CompletableFuture<>();
             failure.completeExceptionally(e);
             return failure;
@@ -98,9 +98,9 @@ public class EmailService {
             helper.setSubject(appName + " - Decision : Transaction acceptee");
             helper.setText(buildTransactionAcceptedHtml(clientName, uetr, amount, currency), true);
             mailSender.send(message);
-            log.info("✅ Email acceptation envoyé avec succès à {}", toEmail);
+            log.info(" Email acceptation envoyé avec succès à {}", toEmail);
         } catch (Exception e) {
-            log.error("❌ ERREUR CRITIQUE - Échec envoi email acceptation à {}: {}", toEmail, e.getMessage());
+            log.error(" ERREUR CRITIQUE - Échec envoi email acceptation à {}: {}", toEmail, e.getMessage());
             throw new RuntimeException("Impossible d'envoyer l'email d'acceptation: " + e.getMessage(), e);
         }
     }
@@ -117,9 +117,9 @@ public class EmailService {
             helper.setSubject(appName + " - Decision : Transaction non validee");
             helper.setText(buildTransactionRejectedHtml(clientName, uetr, rejectionReason), true);
             mailSender.send(message);
-            log.info("✅ Email rejet envoyé avec succès à {}", toEmail);
+            log.info(" Email rejet envoyé avec succès à {}", toEmail);
         } catch (Exception e) {
-            log.error("❌ ERREUR CRITIQUE - Échec envoi email rejet à {}: {}", toEmail, e.getMessage());
+            log.error(" ERREUR CRITIQUE - Échec envoi email rejet à {}: {}", toEmail, e.getMessage());
             throw new RuntimeException("Impossible d'envoyer l'email de rejet: " + e.getMessage(), e);
         }
     }
@@ -137,9 +137,9 @@ public class EmailService {
             String html = buildTransactionAcceptedByAgentHtml(clientName, uetr, amount, currency);
             helper.setText(html, true);
             mailSender.send(message);
-            log.info("✅ Email acceptation agent envoyé avec succès à {}", toEmail);
+            log.info(" Email acceptation agent envoyé avec succès à {}", toEmail);
         } catch (Exception e) {
-            log.error("❌ Erreur envoi email acceptation agent à {}: {}", toEmail, e.getMessage());
+            log.error(" Erreur envoi email acceptation agent à {}: {}", toEmail, e.getMessage());
             throw new RuntimeException("Impossible d'envoyer l'email d'acceptation agent: " + e.getMessage(), e);
         }
     }
@@ -156,7 +156,6 @@ public class EmailService {
                 ".header h1{color:#ffffff;margin:0;font-size:24px;font-weight:500;}" +
                 ".content{padding:32px;}" +
                 ".info-box{background-color:#f8f9fc;border-left:4px solid #1a4d8c;padding:16px;margin:20px 0;}" +
-                ".button{display:inline-block;background-color:#1a4d8c;color:#ffffff;padding:12px 28px;text-decoration:none;border-radius:4px;font-weight:500;margin-top:16px;}" +
                 ".footer{background-color:#f4f6f9;padding:16px;text-align:center;font-size:12px;color:#888888;border-top:1px solid #e0e4e8;}" +
                 ".warning{background-color:#fff8e1;padding:12px;border-radius:4px;font-size:13px;color:#856404;margin:16px 0;}</style>\n" +
                 "</head>\n" +
@@ -170,7 +169,6 @@ public class EmailService {
                 "<p><strong>Nom d'utilisateur :</strong> " + username + "</p>\n" +
                 "<p><strong>Mot de passe temporaire :</strong> " + password + "</p>\n" +
                 "</div>\n" +
-                "<div style='text-align:center;'><a href='" + frontendUrl + "' class='button'>Acceder a la plateforme</a></div>\n" +
                 "<div class='warning'>Pour des raisons de securite, nous vous recommandons de modifier votre mot de passe lors de votre premiere connexion.</div>\n" +
                 "</div>\n" +
                 "<div class='footer'>\n" +
